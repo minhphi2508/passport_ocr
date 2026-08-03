@@ -1,0 +1,26 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Input passport images
+input_images/*
+!input_images/.gitkeep
+
+# Generated pipeline outputs
+outputs/*
+!outputs/.gitkeep
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
