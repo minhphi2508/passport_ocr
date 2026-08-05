@@ -26,6 +26,7 @@ from typing import Any
 
 import numpy as np
 from paddleocr import PaddleOCR
+from device_config import PADDLE_DEVICE
 
 
 # ============================================================
@@ -610,7 +611,7 @@ def main() -> None:
 
     ocr = PaddleOCR(
         lang="en",
-        device="cpu",
+        device=PADDLE_DEVICE,
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,

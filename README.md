@@ -77,6 +77,7 @@ passport_ocr/
 |   `-- passport_detector_ver3_best.pt
 |-- outputs/
 |-- src/
+|   |-- device_config.py
 |   |-- pipeline.py
 |   |-- process_passport_pages.py
 |   |-- crop_mrz_batch.py
@@ -92,6 +93,8 @@ passport_ocr/
 |   |-- build_final_results.py
 |   `-- evaluate_final_results.py
 |-- requirements.txt
+|-- requirements-cpu.txt
+|-- requirements-gpu.txt
 `-- README.md
 ```
 
@@ -100,38 +103,117 @@ production end-to-end pipeline.
 
 ## 4. Environment
 
-Tested baseline:
+Tested Python baseline:
 
 ``` text
 Python 3.12.10
 ```
 
-Main dependencies:
+Common dependencies are stored in `requirements.txt`:
 
 ``` text
 numpy==2.3.5
 opencv-python==5.0.0.93
 paddleocr==3.7.0
-paddlepaddle==3.2.0
 paddlex==3.7.2
 ultralytics==8.4.114
 ```
 
+The project supports both CPU and GPU execution. Device selection is
+automatic: YOLO/PyTorch and PaddleOCR independently use GPU 0 when their
+installed backend supports CUDA; otherwise they fall back to CPU.
+
+Tested GPU baseline:
+
+``` text
+GPU              : NVIDIA GeForce GTX 1660 Ti
+PyTorch          : 2.5.1+cu118
+Torchvision      : 0.20.1+cu118
+PaddlePaddle GPU : 3.2.0
+PaddleOCR        : 3.7.0
+PaddleX          : 3.7.2
+Ultralytics      : 8.4.114
+```
+
 ## 5. Setup
 
-Create and activate a virtual environment:
+### 5.1 Create a virtual environment
+
+Windows PowerShell:
 
 ``` powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 ```
 
-Install dependencies:
+The `.venv` directory is local and should not be committed to Git.
+
+### 5.2 CPU installation
+
+For a CPU-only environment:
 
 ``` powershell
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements-cpu.txt
 ```
+
+`requirements-cpu.txt` installs the common project dependencies together
+with:
+
+``` text
+paddlepaddle==3.2.0
+torch==2.5.1
+torchvision==0.20.1
+```
+
+No source-code changes are required. The pipeline automatically selects
+CPU when CUDA is unavailable.
+
+### 5.3 GPU installation
+
+The tested GPU environment uses PyTorch 2.5.1 with CUDA 11.8. Install
+the matching PyTorch and Torchvision CUDA wheels first:
+
+``` powershell
+pip install torch==2.5.1+cu118 torchvision==0.20.1+cu118 --index-url https://download.pytorch.org/whl/cu118
+```
+
+Then install the remaining GPU dependencies:
+
+``` powershell
+pip install -r requirements-gpu.txt
+```
+
+`requirements-gpu.txt` installs the common dependencies together with:
+
+``` text
+paddlepaddle-gpu==3.2.0
+```
+
+The tested GPU baseline uses CUDA-enabled PyTorch and PaddlePaddle. A
+different GPU/CUDA environment may require a compatible PyTorch or
+PaddlePaddle build.
+
+### 5.4 Verify device selection
+
+Run:
+
+``` powershell
+python src/device_config.py
+```
+
+Example GPU output:
+
+``` text
+========================================================================
+DEVICE CONFIGURATION
+========================================================================
+YOLO / PyTorch : GPU 0 (NVIDIA GeForce GTX 1660 Ti)
+PaddleOCR      : gpu:0
+========================================================================
+```
+
+On a CPU-only installation, both backends should report CPU.
 
 The first PaddleOCR run may automatically download the required official
 OCR models.
@@ -472,7 +554,6 @@ Potential improvements include:
 -   improved multilingual VIZ OCR;
 -   stronger Date of Issue extraction for uncommon layouts;
 -   targeted fallback OCR for difficult VIZ regions;
--   GPU inference;
 -   API/application deployment;
 -   automated regression tests for known failure cases.
 

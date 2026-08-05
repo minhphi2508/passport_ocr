@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from ultralytics import YOLO
-
+from device_config import YOLO_DEVICE
 
 # ============================================================
 # CẤU HÌNH
@@ -172,7 +172,7 @@ def detect_mrz_candidates(
         imgsz=640,
         conf=CONFIDENCE_THRESHOLD,
         iou=IOU_THRESHOLD,
-        device="cpu",
+        device=YOLO_DEVICE,
         save=False,
         verbose=False,
     )[0]

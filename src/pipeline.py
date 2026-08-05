@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from device_config import print_device_summary
 
 
 # ============================================================
@@ -370,7 +371,8 @@ def run_pipeline(
     print(
         f"Fresh run    : {fresh}"
     )
-
+    print()
+    print_device_summary()
     selected_stages = STAGES[
         start_stage - 1:
         end_stage

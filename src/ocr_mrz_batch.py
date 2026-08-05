@@ -27,6 +27,7 @@ from typing import Any
 
 import numpy as np
 from paddleocr import PaddleOCR
+from device_config import PADDLE_DEVICE
 
 
 # ============================================================
@@ -680,12 +681,12 @@ def main() -> None:
     print("Đang khởi tạo PaddleOCR...")
 
     ocr = PaddleOCR(
-        lang="en",
-        device="cpu",
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=False,
-    )
+    lang="en",
+    device=PADDLE_DEVICE,
+    use_doc_orientation_classify=False,
+    use_doc_unwarping=False,
+    use_textline_orientation=False,
+)
 
     print("PaddleOCR đã sẵn sàng.")
     print(f"Tổng ảnh MRZ              : {len(original_images)}")
