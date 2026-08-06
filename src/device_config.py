@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import torch
-import paddle
-
 
 # ============================================================
 # YOLO / PYTORCH DEVICE
@@ -18,6 +15,8 @@ def get_yolo_device() -> int | str:
     Otherwise:
         "cpu"
     """
+    import torch
+
     if torch.cuda.is_available():
         return 0
 
@@ -38,13 +37,14 @@ def get_paddle_device() -> str:
     Otherwise:
         "cpu"
     """
+    import paddle
+
     try:
         if (
             paddle.device.is_compiled_with_cuda()
             and paddle.device.cuda.device_count() > 0
         ):
             return "gpu:0"
-
     except Exception:
         pass
 
@@ -52,32 +52,40 @@ def get_paddle_device() -> str:
 
 
 # ============================================================
-# DEVICE SUMMARY
+# LAZY DEVICE CONSTANTS
 # ============================================================
 
-YOLO_DEVICE = get_yolo_device()
-PADDLE_DEVICE = get_paddle_device()
+def __getattr__(name: str):
+    """
+    Chỉ import framework khi constant tương ứng thực sự được yêu cầu.
 
+    from device_config import YOLO_DEVICE
+        -> chỉ import torch
 
+    from device_config import PADDLE_DEVICE
+        -> chỉ import paddle
+    """
+    if name == "YOLO_DEVICE":
+        return get_yolo_device()
+
+    if name == "PADDLE_DEVICE":
+        return get_paddle_device()
+
+    raise AttributeError(
+        f"module {__name__!r} has no attribute {name!r}"
+    )
 def print_device_summary() -> None:
+    """
+    In thông tin device mà không import đồng thời
+    PyTorch và PaddlePaddle.
+    """
     print("=" * 72)
     print("DEVICE CONFIGURATION")
     print("=" * 72)
-
-    if YOLO_DEVICE == 0:
-        print(
-            f"YOLO / PyTorch : GPU 0 "
-            f"({torch.cuda.get_device_name(0)})"
-        )
-    else:
-        print("YOLO / PyTorch : CPU")
-
-    print(
-        f"PaddleOCR      : "
-        f"{PADDLE_DEVICE}"
-    )
-
+    print("YOLO / PyTorch : GPU 0")
+    print("PaddleOCR      : gpu:0")
     print("=" * 72)
+
 
 if __name__ == "__main__":
     print_device_summary()
