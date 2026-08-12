@@ -1,3 +1,7 @@
+# Shared project dependencies.
+# Framework backends (PyTorch / PaddlePaddle) are installed by the
+# environment-specific setup scripts.
+
 numpy==2.3.5
 opencv-python==5.0.0.93
 paddleocr==3.7.0

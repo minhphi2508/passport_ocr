@@ -4,7 +4,12 @@ End-to-end pipeline for extracting structured information from foreign passport 
 
 The system combines a YOLO11 passport detector, safe passport-page perspective processing, PaddleOCR-based MRZ/VIZ recognition, TD3 parsing and checksum validation, and hybrid Date of Issue extraction.
 
-The development dataset also contains specimen, synthetic, AI-generated, and non-standard passport images. For this reason, TD3 structure and checksum validation are treated as strong quality signals rather than strict requirements for rejecting an entire record.
+The repository is currently maintained for **two execution environments only**:
+
+1. Windows laptop, CPU only.
+2. Windows machine with **NVIDIA GeForce RTX 5060 Ti**.
+
+Other configurations may work, but they are not part of the maintained/tested setup.
 
 ## 1. Extracted Fields
 
@@ -75,6 +80,9 @@ passport_ocr/
 |-- models/
 |   `-- passport_detector_ver3_best.pt
 |-- outputs/
+|-- scripts/
+|   |-- setup_cpu.ps1
+|   `-- setup_rtx5060ti.ps1
 |-- src/
 |   |-- device_config.py
 |   |-- pipeline.py
@@ -93,108 +101,183 @@ passport_ocr/
 |   `-- evaluate_final_results.py
 |-- requirements.txt
 |-- requirements-cpu.txt
+|-- requirements-rtx5060ti.txt
 |-- requirements-gpu.txt
-|-- MENTOR1_CHECKPOINT.md
 `-- README.md
 ```
 
-Experimental analysis, audit, recovery, and single-image scripts are not part of the production end-to-end pipeline.
+`requirements-gpu.txt` is kept only as a compatibility/deprecation file. New RTX 5060 Ti installations should use `scripts/setup_rtx5060ti.ps1`.
 
-Development findings and the state of the project at the current checkpoint are documented separately in `MENTOR1_CHECKPOINT.md`.
+## 4. Supported Environments
 
-## 4. Environment
-
-Tested Python baseline:
+### CPU laptop
 
 ```text
-Python 3.12.10
+OS             : Windows
+Python         : 3.12
+PyTorch        : 2.8.0 CPU
+Torchvision    : 0.23.0 CPU
+PaddlePaddle   : 3.3.0 CPU
+PaddleOCR      : 3.7.0
+PaddleX        : 3.7.2
+Ultralytics    : 8.4.114
 ```
 
-Common dependencies are stored in `requirements.txt`:
+### RTX 5060 Ti
 
 ```text
-numpy==2.3.5
-opencv-python==5.0.0.93
-paddleocr==3.7.0
-paddlex==3.7.2
-ultralytics==8.4.114
+OS             : Windows
+Python         : 3.12
+GPU            : NVIDIA GeForce RTX 5060 Ti
+GPU arch       : Blackwell / compute capability 12.0
+PyTorch        : 2.8.0
+Torchvision    : 0.23.0
+PyTorch CUDA   : 12.8
+PaddlePaddle   : 3.3.0 GPU
+Paddle CUDA    : 12.9 wheel
+PaddleOCR      : 3.7.0
+PaddleX        : 3.7.2
+Ultralytics    : 8.4.114
 ```
 
-The project supports both CPU and GPU execution.
-
-Device selection is automatic: YOLO/PyTorch and PaddleOCR independently use GPU 0 when their installed backend supports CUDA; otherwise they fall back to CPU.
-
-Tested GPU baseline:
+The old PaddlePaddle GPU 3.2.0 CUDA 12.6 setup must not be used on the RTX 5060 Ti. That wheel does not contain support for compute capability 12.0 and can fail with:
 
 ```text
-GPU              : NVIDIA GeForce GTX 1660 Ti
-PyTorch          : 2.5.1+cu118
-Torchvision      : 0.20.1+cu118
-PaddlePaddle GPU : 3.2.0
-PaddleOCR        : 3.7.0
-PaddleX          : 3.7.2
-Ultralytics      : 8.4.114
+Mismatched GPU Architecture
+Unsupported GPU architecture
 ```
 
-## 5. Setup
-
-### 5.1 Create a virtual environment
-
-Windows PowerShell:
+## 5. Clone
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
+git clone https://github.com/minhphi2508/passport_ocr.git
+cd passport_ocr
 ```
 
-The `.venv` directory is local and should not be committed to Git.
+## 6. CPU Setup
 
-### 5.2 CPU installation
-
-For a CPU-only environment:
+Recommended one-command setup:
 
 ```powershell
-pip install -r requirements-cpu.txt
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\scripts\setup_cpu.ps1
 ```
 
-`requirements-cpu.txt` installs the common project dependencies together with:
+The script creates `.venv` with Python 3.12 if necessary and installs `requirements-cpu.txt`.
+
+Manual equivalent:
+
+```powershell
+py -3.12 -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+
+python -m pip install -U pip setuptools wheel
+python -m pip install -r requirements-cpu.txt
+```
+
+Verify:
+
+```powershell
+python -c "import torch; print('Torch:',torch.__version__); print('CUDA:',torch.cuda.is_available())"
+python -c "import paddle; print('Paddle:',paddle.__version__); print('CUDA:',paddle.device.is_compiled_with_cuda())"
+python src/device_config.py
+```
+
+CPU is the expected result for both frameworks.
+
+## 7. RTX 5060 Ti Setup
+
+Use the setup script instead of manually installing a generic `requirements-gpu.txt`:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\scripts\setup_rtx5060ti.ps1
+```
+
+The script performs the installation in this order:
+
+1. Create/activate Python 3.12 virtual environment.
+2. Install common project dependencies.
+3. Install PyTorch 2.8.0 + Torchvision 0.23.0 from the CUDA 12.8 index.
+4. Install PaddlePaddle GPU 3.3.0 from the CUDA 12.9 package index.
+5. Run dependency checks.
+6. Run real GPU tensor operations with both frameworks.
+
+Manual equivalent:
+
+```powershell
+py -3.12 -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+
+python -m pip install -U pip setuptools wheel
+
+python -m pip install -r requirements.txt
+
+python -m pip install `
+    torch==2.8.0 `
+    torchvision==0.23.0 `
+    --index-url https://download.pytorch.org/whl/cu128
+
+python -m pip install `
+    paddlepaddle-gpu==3.3.0 `
+    -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
+```
+
+### PyTorch GPU verification
+
+```powershell
+python -c "import torch; x=torch.randn(1024,1024,device='cuda'); y=x@x; print('Torch:',torch.__version__); print('CUDA:',torch.version.cuda); print('GPU:',torch.cuda.get_device_name(0)); print('Capability:',torch.cuda.get_device_capability(0)); print('Result:',float(y.mean()))"
+```
+
+### Paddle GPU verification
+
+```powershell
+python -c "import paddle; paddle.set_device('gpu:0'); x=paddle.randn([1024,1024]); y=paddle.matmul(x,x); print('Paddle:',paddle.__version__); print('Device:',paddle.device.get_device()); print('Result:',float(paddle.mean(y)))"
+```
+
+A warning such as `No ccache found` is not relevant to normal inference and can be ignored.
+
+When troubleshooting, test `torch` and `paddle` independently. `paddleocr`, `paddlex`, or `modelscope` may transitively import PyTorch, which can make a PyTorch DLL problem appear to be a PaddleOCR problem.
+
+## 8. Dependency Files
+
+### `requirements.txt`
+
+Shared application dependencies only.
+
+It intentionally does not pin/install PyTorch or PaddlePaddle backends.
+
+### `requirements-cpu.txt`
+
+CPU environment. Includes the shared dependencies and CPU framework packages.
+
+### `requirements-rtx5060ti.txt`
+
+Documents the RTX 5060 Ti profile and includes shared dependencies, but the CUDA frameworks are intentionally installed by `scripts/setup_rtx5060ti.ps1` so that each framework uses its correct package index.
+
+### `requirements-gpu.txt`
+
+Deprecated compatibility file. Use `scripts/setup_rtx5060ti.ps1` for new GPU installations.
+
+## 9. Device Selection
+
+`src/device_config.py` detects the two frameworks independently.
+
+YOLO/Ultralytics:
 
 ```text
-paddlepaddle==3.2.0
-torch==2.5.1
-torchvision==0.20.1
+CUDA available -> device 0
+otherwise      -> cpu
 ```
 
-No source-code changes are required.
-
-The pipeline automatically selects CPU when CUDA is unavailable.
-
-### 5.3 GPU installation
-
-The tested GPU environment uses PyTorch 2.5.1 with CUDA 11.8.
-
-Install the matching PyTorch and Torchvision CUDA wheels first:
-
-```powershell
-pip install torch==2.5.1+cu118 torchvision==0.20.1+cu118 --index-url https://download.pytorch.org/whl/cu118
-```
-
-Then install the remaining GPU dependencies:
-
-```powershell
-pip install -r requirements-gpu.txt
-```
-
-`requirements-gpu.txt` installs the common dependencies together with:
+PaddleOCR:
 
 ```text
-paddlepaddle-gpu==3.2.0
+CUDA build + GPU available -> gpu:0
+otherwise                  -> cpu
 ```
-
-A different GPU/CUDA environment may require compatible PyTorch and PaddlePaddle builds.
-
-### 5.4 Verify device selection
 
 Run:
 
@@ -202,22 +285,9 @@ Run:
 python src/device_config.py
 ```
 
-Example GPU output:
+The summary performs real detection instead of printing a hard-coded GPU value.
 
-```text
-========================================================================
-DEVICE CONFIGURATION
-========================================================================
-YOLO / PyTorch : GPU 0 (NVIDIA GeForce GTX 1660 Ti)
-PaddleOCR      : gpu:0
-========================================================================
-```
-
-On a CPU-only installation, both backends should report CPU.
-
-The first PaddleOCR run may automatically download the required official OCR models.
-
-## 6. Detection Model
+## 10. Detection Model
 
 Place the trained YOLO11 Ver3 weights at:
 
@@ -232,32 +302,7 @@ mrz
 passport_page
 ```
 
-### Ver3 validation result
-
-Dataset split:
-
-```text
-Train : 585 images
-Valid : 42 images
-Test  : 42 images
-```
-
-| Class | Precision | Recall | mAP50 | mAP50-95 |
-|---|---:|---:|---:|---:|
-| All | 0.989 | 1.000 | 0.995 | 0.900 |
-| MRZ | 0.984 | 1.000 | 0.995 | 0.845 |
-| Passport page | 0.994 | 1.000 | 0.995 | 0.955 |
-
-On the 251-image unseen detection set:
-
-```text
-Exactly 1 MRZ + 1 passport_page : 250/251
-Exact detection rate            : 99.60%
-```
-
-The remaining image produced two MRZ detections and one passport-page detection.
-
-## 7. Input
+## 11. Input
 
 Place passport images in:
 
@@ -277,9 +322,7 @@ Supported extensions include:
 .tiff
 ```
 
-For a small end-to-end test, keep only the desired test images in this directory before starting a fresh run.
-
-## 8. Running the Pipeline
+## 12. Running the Pipeline
 
 View all stages:
 
@@ -308,154 +351,28 @@ Run a clean end-to-end batch:
 python src/pipeline.py --fresh
 ```
 
-`--fresh` removes generated outputs/checkpoints from the previous run, preventing old OCR records from being mixed with a new dataset.
+`--fresh` removes generated outputs/checkpoints from the previous run and is only appropriate when starting from stage 1.
 
-Run selected stages when debugging:
+Resume from stage 3:
+
+```powershell
+python src/pipeline.py --start-stage 3
+```
+
+Run a selected stage range:
 
 ```powershell
 python src/pipeline.py --start-stage 8 --end-stage 10
 ```
 
-## 9. Passport Page Processing
+## 13. Outputs
 
-`process_passport_pages.py`:
-
-1. Detects `passport_page` and `mrz` with YOLO11 Ver3.
-2. Selects the highest-confidence passport-page detection.
-3. Crops the passport page with padding.
-4. Searches for a valid page quadrilateral.
-5. Applies perspective transformation only when safety checks pass.
-6. Falls back to the ordinary crop when perspective correction is unsafe.
-7. Rotates portrait outputs to landscape.
-
-The perspective logic is intentionally conservative because an incorrect transformation can remove or distort the MRZ.
-
-Outputs are stored under:
+Final files:
 
 ```text
-outputs/passport_pages_safe/
+outputs/final_results/passport_extraction_results.csv
+outputs/final_results/passport_extraction_results.json
 ```
-
-## 10. MRZ Branch
-
-### 10.1 MRZ crop and preprocessing
-
-The transformed passport page is passed through YOLO11 Ver3 again to locate the MRZ.
-
-The selected region is cropped with padding.
-
-The OCR stage evaluates:
-
-```text
-original
-grayscale
-threshold
-```
-
-### 10.2 MRZ OCR
-
-PaddleOCR processes the available variants.
-
-The pipeline selects the best candidate using signals including:
-
-- number of recovered MRZ lines;
-- expected TD3 line lengths;
-- OCR confidence.
-
-### 10.3 TD3 parsing
-
-The parser extracts fields including:
-
-```text
-document_type
-issuing_country
-surname
-given_names
-passport_number
-nationality
-birth_date
-sex
-expiry_date
-personal_number
-check digits
-```
-
-### 10.4 Checksum validation
-
-TD3 check digits are calculated for:
-
-- passport number;
-- date of birth;
-- date of expiry;
-- personal number;
-- final composite field.
-
-Checksum validation is retained as a quality signal rather than being used to automatically reject the entire record.
-
-This behavior is intentional because the development data includes specimen, synthetic, AI-generated, and non-standard documents that may contain useful readable information despite failing strict ICAO TD3 validation.
-
-## 11. VIZ Branch
-
-The VIZ branch is used primarily to extract `date_of_issue`.
-
-The VIZ region is derived from the transformed passport page while excluding the lower MRZ area.
-
-Preprocessing produces:
-
-```text
-color
-grayscale
-enhanced
-```
-
-PaddleOCR is then applied to the available variants.
-
-VIZ OCR is inherently less standardized than MRZ OCR because passport layouts, languages, fonts, security backgrounds, specimen watermarks, and date formats differ across countries and document designs.
-
-## 12. Date of Issue Extraction
-
-Date of Issue is not encoded in the standard TD3 MRZ, so it must be recovered from VIZ OCR.
-
-The production extractor uses a hybrid strategy.
-
-### 12.1 Baseline extraction
-
-The baseline Date of Issue extractor uses:
-
-- multilingual Date of Issue label patterns;
-- recognized date candidates;
-- OCR geometry;
-- MRZ Date of Birth;
-- MRZ Date of Expiry;
-- temporal plausibility rules.
-
-MRZ information helps reject date candidates that are actually Date of Birth or Date of Expiry.
-
-### 12.2 Spatial rescue
-
-A fallback spatial rescue layer is used only when the baseline extractor does not find a Date of Issue.
-
-The rescue stage:
-
-1. searches the `enhanced`, `color`, and `grayscale` VIZ OCR variants;
-2. identifies strong Date-of-Issue label candidates;
-3. searches for nearby date candidates using OCR bounding-box geometry;
-4. scores vertical distance, horizontal alignment, OCR confidence, and cross-variant support;
-5. rejects obvious Date of Birth, Date of Expiry, and validity labels.
-
-The rescue layer is deliberately fallback-only.
-
-If the baseline extractor already finds a Date of Issue, that result is preserved rather than overwritten by the spatial rescue logic.
-
-### 12.3 Extraction philosophy
-
-The extractor does not force a Date of Issue for every passport.
-
-When the available evidence is insufficient, `date_of_issue` can remain empty.
-
-This is preferred to aggressively selecting another date from the VIZ and silently introducing an incorrect field.
-
-## 13. Final Output
 
 Primary fields:
 
@@ -468,28 +385,6 @@ date_of_birth
 sex
 date_of_expiry
 date_of_issue
-```
-
-Final files:
-
-```text
-outputs/final_results/passport_extraction_results.csv
-outputs/final_results/passport_extraction_results.json
-```
-
-Example:
-
-```json
-{
-  "passport_number": "L898902C3",
-  "surname": "ERIKSSON",
-  "given_names": "ANNA MARIA",
-  "nationality": "UTO",
-  "date_of_birth": "1974-08-12",
-  "sex": "F",
-  "date_of_expiry": "2012-04-15",
-  "date_of_issue": "2007-04-16"
-}
 ```
 
 Records may be classified as:
@@ -517,201 +412,13 @@ outputs/evaluation/end_to_end_summary.csv
 outputs/evaluation/end_to_end_details.csv
 ```
 
-### Reference 15-image smoke test
+Evaluation numbers from development/smoke-test batches should be treated as pipeline/field-availability references unless they are compared against manually verified ground truth.
 
-A previous small end-to-end test produced:
+## 15. Operational Notes
 
-```text
-Total images              : 15
-Complete records          : 11/15 (73.3%)
-Partial records           : 4/15 (26.7%)
-Failed records            : 0/15 (0.0%)
-
-MRZ parsed                : 14/15 (93.3%)
-MRZ validation ran        : 14/15 (93.3%)
-MRZ all main checks valid : 14/15 (93.3%)
-
-Date of Issue available   : 12/15 (80.0%)
-DOI high confidence       : 9
-DOI medium confidence     : 3
-DOI low confidence        : 0
-```
-
-Field availability:
-
-| Field | Available | Rate |
-|---|---:|---:|
-| Passport number | 14/15 | 93.3% |
-| Surname | 14/15 | 93.3% |
-| Given names | 12/15 | 80.0% |
-| Nationality | 14/15 | 93.3% |
-| Date of birth | 14/15 | 93.3% |
-| Sex | 14/15 | 93.3% |
-| Date of expiry | 14/15 | 93.3% |
-| Date of issue | 12/15 | 80.0% |
-
-These figures measure **field availability / pipeline success**, not field-level accuracy against manually annotated ground truth.
-
-They should therefore be treated as a smoke-test reference rather than a definitive benchmark.
-
-### Development-batch interpretation
-
-Larger development runs contain multiple transformed or degraded variants of the same passport identity.
-
-Consequently, image-level failure counts are not equivalent to independent passport-level failure counts.
-
-For example, a single difficult source passport can produce multiple failures after blur, lighting, perspective, compression, or other transformations are applied.
-
-Some development images are also extremely degraded or non-standard even for human inspection.
-
-For these reasons:
-
-- raw image-level failure rate should not be presented as passport-level accuracy;
-- failures should also be analyzed at the identity level;
-- visually unusable samples should be separated from meaningful OCR failures;
-- field-level accuracy claims require manually verified ground truth.
-
-## 15. Current Development Checkpoint
-
-The current production pipeline is considered stable enough to serve as the Mentor #1 project checkpoint.
-
-### Date of Issue
-
-On the current 1061-record VIZ development batch, rerunning the baseline production code produced:
-
-```text
-Baseline DOI available : 734
-Patched DOI available  : 749
-Spatial rescues        : 15
-Lost baseline DOI      : 0
-```
-
-These values describe **Date of Issue availability on the development batch**, not Date of Issue accuracy.
-
-The development batch contains repeated passport identities and non-standard/specimen/synthetic images, so these numbers should not be interpreted as an independent 1061-passport benchmark.
-
-### MRZ OCR failure analysis
-
-The analyzed MRZ OCR batch contained:
-
-```text
-Total MRZ OCR records       : 1012
-Usable 2-line records       : 922
-Fewer than 2 selected lines : 90
-```
-
-The 90 image-level failures were categorized as:
-
-```text
-very_little_text       : 52
-ocr_empty_all_variants : 38
-```
-
-No failed record had another OCR variant that already recovered two usable MRZ lines.
-
-The failures were concentrated in roughly ten passport identities, with multiple transformed variants of the same difficult source images.
-
-This indicates that the image-level failure count substantially overstates the number of independent problematic passports.
-
-### MRZ recovery experiments
-
-Checksum-guided MRZ reconstruction and repair were investigated during development.
-
-Aggressive recovery could create false repairs, while conservative repair recovered only a very small number of additional strong cases.
-
-MRZ recovery was therefore **not integrated into the production pipeline** at this checkpoint.
-
-The project currently prefers a smaller reproducible pipeline over adding complex heuristics with limited demonstrated benefit.
-
-More detailed development notes are stored in:
-
-```text
-MENTOR1_CHECKPOINT.md
-```
-
-## 16. Current Strengths
-
-The current pipeline demonstrates:
-
-- strong passport-page and MRZ detection performance;
-- safe passport-page perspective handling with fallback behavior;
-- multi-variant MRZ OCR;
-- structured TD3 parsing;
-- checksum-based MRZ quality validation;
-- permissive handling of specimen and non-standard documents;
-- MRZ-assisted Date of Issue extraction;
-- fallback spatial DOI rescue;
-- CSV and JSON structured outputs;
-- CPU/GPU execution support;
-- resumable multi-stage pipeline execution.
-
-## 17. Known Limitations
-
-The system can return partial results for:
-
-- extremely blurred or low-resolution images;
-- MRZ text that is unreadable even after preprocessing;
-- very small VIZ text;
-- severe perspective distortion;
-- security patterns or specimen watermarks covering important fields;
-- unusual multilingual passport layouts;
-- uncommon Date of Issue formats;
-- MRZ OCR that cannot recover two usable TD3 lines;
-- missing or incorrect detector predictions.
-
-The VIZ branch is particularly sensitive to image quality and document-layout diversity.
-
-The current development dataset also contains repeated variants of the same passport identities, so evaluation must account for identity duplication before making general performance claims.
-
-## 18. Future Improvements
-
-The next improvements should prioritize evaluation quality before adding more heuristics.
-
-Recommended directions:
-
-1. Build a manually verified field-level ground-truth benchmark.
-2. Evaluate using identity-aware train/validation/test organization.
-3. Separate visually unusable images from readable but difficult OCR cases.
-4. Measure failure rates both per image and per passport identity.
-5. Investigate identities that consistently fail despite readable MRZ text.
-6. Determine whether those failures originate from:
-   - detector/crop quality;
-   - preprocessing/upscaling;
-   - PaddleOCR recognition;
-   - TD3 parsing;
-   - or document non-compliance.
-7. Improve multilingual VIZ OCR and uncommon Date of Issue layouts where justified by verified failure cases.
-8. Add automated regression tests for known representative failures.
-9. Evaluate future changes against a fixed benchmark before integrating them into production.
-10. Consider API/application deployment after the extraction pipeline and evaluation protocol are sufficiently stable.
-
-Further parser or OCR heuristics should be introduced only when they produce measurable improvements without degrading previously correct cases.
-
-## 19. Repository and Output Policy
-
-Generated runtime data is intentionally excluded from Git.
-
-The repository ignores:
-
-```text
-.venv/
-input_images/*
-outputs/*
-```
-
-Large/intermediate OCR outputs should be backed up separately when they are needed for later analysis.
-
-The GitHub repository is intended to contain the reproducible source code, configuration, model weights, dependency files, and project documentation rather than generated runtime artifacts.
-
-## 20. Baseline Status
-
-This version is treated as the current Mentor #1 project checkpoint.
-
-The production pipeline is intentionally kept relatively conservative:
-
-- checksum failures are recorded rather than automatically rejecting non-standard documents;
-- existing Date of Issue results are preserved before fallback rescue;
-- experimental MRZ repair is not included without sufficient demonstrated benefit;
-- development failures are interpreted at both image and identity level.
-
-Future changes should be evaluated against fixed, manually verified data so improvements can be measured objectively rather than inferred only from OCR coverage or visual inspection.
+- Keep `.venv/` out of Git.
+- Do not install random newer Torch/Paddle versions into a working environment without a reason.
+- Do not use PaddlePaddle 3.2.0 CUDA 12.6 on the RTX 5060 Ti.
+- A successful real tensor operation is a stronger GPU health check than only checking device count.
+- If the current environment runs the production stages successfully, avoid changing packages merely to remove harmless warnings.
+- The first PaddleOCR run may download official OCR models.

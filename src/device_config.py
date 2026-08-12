@@ -57,13 +57,13 @@ def get_paddle_device() -> str:
 
 def __getattr__(name: str):
     """
-    Chỉ import framework khi constant tương ứng thực sự được yêu cầu.
+    Import only the framework required by the requested constant.
 
     from device_config import YOLO_DEVICE
-        -> chỉ import torch
+        -> imports torch only
 
     from device_config import PADDLE_DEVICE
-        -> chỉ import paddle
+        -> imports paddle only
     """
     if name == "YOLO_DEVICE":
         return get_yolo_device()
@@ -74,16 +74,49 @@ def __getattr__(name: str):
     raise AttributeError(
         f"module {__name__!r} has no attribute {name!r}"
     )
+
+
+def _get_torch_summary() -> str:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return "cpu"
+
+        name = torch.cuda.get_device_name(0)
+        capability = torch.cuda.get_device_capability(0)
+        return f"GPU 0 ({name}, sm_{capability[0]}{capability[1]})"
+    except Exception as exc:
+        return f"unavailable ({type(exc).__name__})"
+
+
+def _get_paddle_summary() -> str:
+    try:
+        import paddle
+
+        if (
+            paddle.device.is_compiled_with_cuda()
+            and paddle.device.cuda.device_count() > 0
+        ):
+            return "gpu:0"
+
+        return "cpu"
+    except Exception as exc:
+        return f"unavailable ({type(exc).__name__})"
+
+
 def print_device_summary() -> None:
     """
-    In thông tin device mà không import đồng thời
-    PyTorch và PaddlePaddle.
+    Print actual backend/device detection.
+
+    Torch and Paddle are imported independently so one broken framework
+    does not prevent reporting the state of the other framework.
     """
     print("=" * 72)
     print("DEVICE CONFIGURATION")
     print("=" * 72)
-    print("YOLO / PyTorch : GPU 0")
-    print("PaddleOCR      : gpu:0")
+    print(f"YOLO / PyTorch : {_get_torch_summary()}")
+    print(f"PaddleOCR      : {_get_paddle_summary()}")
     print("=" * 72)
 
 

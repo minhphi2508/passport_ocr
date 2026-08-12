@@ -1,0 +1,9 @@
+# RTX 5060 Ti profile.
+#
+# Do NOT install this file directly and expect CUDA wheels to be selected
+# correctly from PyPI. Use:
+#
+#   powershell -ExecutionPolicy Bypass -File .\scripts\setup_rtx5060ti.ps1
+#
+# Shared dependencies:
+-r requirements.txt

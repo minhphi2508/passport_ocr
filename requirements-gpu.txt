@@ -1,3 +1,11 @@
+# Deprecated compatibility file.
+#
+# This repository is now maintained for only two environments:
+#   1. CPU laptop
+#   2. NVIDIA GeForce RTX 5060 Ti
+#
+# For RTX 5060 Ti, use:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\setup_rtx5060ti.ps1
+#
+# Kept only so old documentation/commands fail less surprisingly.
 -r requirements.txt
-
-paddlepaddle-gpu==3.2.0
