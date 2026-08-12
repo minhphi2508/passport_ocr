@@ -2,70 +2,59 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
-from ultralytics import YOLO
-from device_config import YOLO_DEVICE
 
-# ============================================================
-# CẤU HÌNH
-# ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-MODEL_PATH = (
-    PROJECT_ROOT
-    / "models"
-    / "passport_detector_ver3_best.pt"
-)
-
-INPUT_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "passport_pages_safe"
-    / "transformed"
-)
+PAGE_ROOT = PROJECT_ROOT / "outputs" / "passport_pages_safe"
+PROCESSING_CSV = PAGE_ROOT / "processing_results.csv"
+INPUT_DIR = PAGE_ROOT / "transformed"
 
 OUTPUT_ROOT = PROJECT_ROOT / "outputs" / "mrz_stage"
-
 ORIGINAL_DIR = OUTPUT_ROOT / "original_crops"
 GRAYSCALE_DIR = OUTPUT_ROOT / "grayscale"
 THRESHOLD_DIR = OUTPUT_ROOT / "threshold"
 DEBUG_DIR = OUTPUT_ROOT / "debug"
 CSV_PATH = OUTPUT_ROOT / "mrz_detection_results.csv"
 
-IMAGE_EXTENSIONS = {
-    ".jpg", ".jpeg", ".png", ".bmp",
-    ".webp", ".tif", ".tiff",
-}
-
-CONFIDENCE_THRESHOLD = 0.25
-IOU_THRESHOLD = 0.50
-
-# MRZ nằm sát mép nên padding phải vừa phải.
 PADDING_X_RATIO = 0.015
 PADDING_Y_RATIO = 0.18
-
-# Nâng chiều cao ảnh MRZ để OCR dễ hơn.
 TARGET_HEIGHT = 180
 
 
-# ============================================================
-# HÀM TIỆN ÍCH
-# ============================================================
+def parse_bool(value: Any) -> bool:
+    return str(value).strip().lower() == "true"
 
-def safe_output_name(
-    image_path: Path,
-    input_root: Path,
-) -> str:
-    relative_path = image_path.relative_to(input_root)
-    parts = list(relative_path.parts)
 
-    stem = Path(parts[-1]).stem
-    safe_stem = "__".join(parts[:-1] + [stem])
+def parse_int(value: Any) -> int | None:
+    if value in (None, "", "None", "null"):
+        return None
+    try:
+        return int(float(str(value)))
+    except (TypeError, ValueError):
+        return None
 
-    return f"{safe_stem}.jpg"
+
+def parse_float(value: Any) -> float | None:
+    if value in (None, "", "None", "null"):
+        return None
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def load_processing_rows() -> list[dict[str, str]]:
+    if not PROCESSING_CSV.exists():
+        raise FileNotFoundError(
+            f"Không thấy passport processing CSV:\n{PROCESSING_CSV}"
+        )
+
+    with PROCESSING_CSV.open("r", newline="", encoding="utf-8-sig") as file:
+        return list(csv.DictReader(file))
 
 
 def add_padding(
@@ -74,10 +63,8 @@ def add_padding(
     image_height: int,
 ) -> tuple[int, int, int, int]:
     x1, y1, x2, y2 = bbox
-
     box_width = x2 - x1
     box_height = y2 - y1
-
     padding_x = int(round(box_width * PADDING_X_RATIO))
     padding_y = int(round(box_height * PADDING_Y_RATIO))
 
@@ -89,24 +76,14 @@ def add_padding(
     )
 
 
-def resize_to_target_height(
-    image: np.ndarray,
-    target_height: int,
-) -> np.ndarray:
+def resize_to_target_height(image: np.ndarray, target_height: int) -> np.ndarray:
     height, width = image.shape[:2]
-
     if height <= 0 or width <= 0:
         raise ValueError("Ảnh crop có kích thước không hợp lệ.")
 
     scale = target_height / height
     target_width = max(1, int(round(width * scale)))
-
-    interpolation = (
-        cv2.INTER_CUBIC
-        if scale > 1
-        else cv2.INTER_AREA
-    )
-
+    interpolation = cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA
     return cv2.resize(
         image,
         (target_width, target_height),
@@ -114,31 +91,14 @@ def resize_to_target_height(
     )
 
 
-def create_grayscale_variant(
-    mrz_crop: np.ndarray,
-) -> np.ndarray:
-    gray = cv2.cvtColor(
-        mrz_crop,
-        cv2.COLOR_BGR2GRAY,
-    )
-
-    clahe = cv2.createCLAHE(
-        clipLimit=1.8,
-        tileGridSize=(8, 4),
-    )
-
+def create_grayscale_variant(mrz_crop: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(mrz_crop, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 4))
     enhanced = clahe.apply(gray)
-
-    return resize_to_target_height(
-        enhanced,
-        TARGET_HEIGHT,
-    )
+    return resize_to_target_height(enhanced, TARGET_HEIGHT)
 
 
-def create_threshold_variant(
-    grayscale_image: np.ndarray,
-) -> np.ndarray:
-    # Otsu tự tìm threshold theo từng ảnh.
+def create_threshold_variant(grayscale_image: np.ndarray) -> np.ndarray:
     _, thresholded = cv2.threshold(
         grayscale_image,
         0,
@@ -146,129 +106,81 @@ def create_threshold_variant(
         cv2.THRESH_BINARY + cv2.THRESH_OTSU,
     )
 
-    # Đảm bảo nền chủ yếu là trắng.
-    white_ratio = float(
-        np.mean(thresholded == 255)
-    )
-
-    if white_ratio < 0.50:
-        thresholded = cv2.bitwise_not(
-            thresholded
-        )
+    if float(np.mean(thresholded == 255)) < 0.50:
+        thresholded = cv2.bitwise_not(thresholded)
 
     return thresholded
 
 
-# ============================================================
-# DETECT MRZ
-# ============================================================
+def metadata_bbox(row: dict[str, str]) -> tuple[int, int, int, int] | None:
+    if not parse_bool(row.get("transformed_mrz_detected")):
+        return None
 
-def detect_mrz_candidates(
-    model: YOLO,
-    image_path: Path,
-) -> list[dict[str, object]]:
-    result = model.predict(
-        source=str(image_path),
-        imgsz=640,
-        conf=CONFIDENCE_THRESHOLD,
-        iou=IOU_THRESHOLD,
-        device=YOLO_DEVICE,
-        save=False,
-        verbose=False,
-    )[0]
+    values = [
+        parse_int(row.get("transformed_mrz_x1")),
+        parse_int(row.get("transformed_mrz_y1")),
+        parse_int(row.get("transformed_mrz_x2")),
+        parse_int(row.get("transformed_mrz_y2")),
+    ]
 
-    candidates: list[dict[str, object]] = []
+    if any(value is None for value in values):
+        return None
 
-    if result.boxes is not None:
-        for box in result.boxes:
-            class_id = int(box.cls.item())
-            class_name = result.names[class_id]
-
-            if class_name != "mrz":
-                continue
-
-            confidence = float(box.conf.item())
-            x1, y1, x2, y2 = (
-                box.xyxy[0]
-                .cpu()
-                .tolist()
-            )
-
-            candidates.append(
-                {
-                    "confidence": confidence,
-                    "bbox": (
-                        int(round(x1)),
-                        int(round(y1)),
-                        int(round(x2)),
-                        int(round(y2)),
-                    ),
-                }
-            )
-
-    del result
-
-    return candidates
+    x1, y1, x2, y2 = values
+    assert x1 is not None and y1 is not None and x2 is not None and y2 is not None
+    return x1, y1, x2, y2
 
 
-# ============================================================
-# XỬ LÝ MỘT ẢNH
-# ============================================================
+def process_one_row(row: dict[str, str]) -> dict[str, Any]:
+    sample_id = row.get("sample_id") or ""
+    source_filename = row.get("source_filename") or ""
+    relative_path = row.get("relative_path") or ""
+    generated_filename = row.get("generated_filename") or f"{sample_id}.jpg"
 
-def process_one_image(
-    model: YOLO,
-    image_path: Path,
-) -> dict[str, object]:
-    output_name = safe_output_name(
-        image_path,
-        INPUT_DIR,
-    )
+    base = {
+        "sample_id": sample_id,
+        "filename": generated_filename,
+        "source_filename": source_filename,
+        "relative_path": relative_path,
+    }
 
-    original_path = ORIGINAL_DIR / output_name
-    grayscale_path = GRAYSCALE_DIR / output_name
-    threshold_path = THRESHOLD_DIR / output_name
-    debug_path = DEBUG_DIR / output_name
+    transformed_path_text = row.get("transformed_path")
+    bbox = metadata_bbox(row)
+
+    if not transformed_path_text:
+        return {
+            **base,
+            "status": "passport_page_unavailable",
+            "mrz_count": 0,
+            "selected_confidence": None,
+            "error": None,
+        }
+
+    image_path = Path(transformed_path_text)
+    if not image_path.exists():
+        image_path = INPUT_DIR / generated_filename
 
     image = cv2.imread(str(image_path))
-
     if image is None:
         return {
-            "filename": image_path.name,
-            "relative_path": str(
-                image_path.relative_to(INPUT_DIR)
-            ),
+            **base,
             "status": "image_read_failed",
             "mrz_count": 0,
             "selected_confidence": None,
-            "error": "OpenCV không đọc được ảnh.",
+            "error": f"Không đọc được transformed page: {image_path}",
         }
 
-    image_height, image_width = image.shape[:2]
-
-    candidates = detect_mrz_candidates(
-        model=model,
-        image_path=image_path,
-    )
-
-    if not candidates:
+    if bbox is None:
         return {
-            "filename": image_path.name,
-            "relative_path": str(
-                image_path.relative_to(INPUT_DIR)
-            ),
+            **base,
             "status": "mrz_not_detected",
             "mrz_count": 0,
             "selected_confidence": None,
             "error": None,
         }
 
-    best_candidate = max(
-        candidates,
-        key=lambda item: item["confidence"],
-    )
-
-    raw_bbox = best_candidate["bbox"]
-
+    image_height, image_width = image.shape[:2]
+    raw_bbox = bbox
     x1, y1, x2, y2 = add_padding(
         bbox=raw_bbox,
         image_width=image_width,
@@ -276,103 +188,53 @@ def process_one_image(
     )
 
     mrz_crop = image[y1:y2, x1:x2]
-
     if mrz_crop.size == 0:
         return {
-            "filename": image_path.name,
-            "relative_path": str(
-                image_path.relative_to(INPUT_DIR)
-            ),
+            **base,
             "status": "empty_mrz_crop",
-            "mrz_count": len(candidates),
-            "selected_confidence": best_candidate["confidence"],
+            "mrz_count": 1,
+            "selected_confidence": parse_float(
+                row.get("transformed_mrz_confidence")
+            ),
             "error": "MRZ crop rỗng.",
         }
 
-    # Bản màu gốc được resize nhưng không enhance.
-    original_resized = resize_to_target_height(
-        mrz_crop,
-        TARGET_HEIGHT,
-    )
+    output_name = f"{sample_id}.jpg"
+    original_path = ORIGINAL_DIR / output_name
+    grayscale_path = GRAYSCALE_DIR / output_name
+    threshold_path = THRESHOLD_DIR / output_name
+    debug_path = DEBUG_DIR / output_name
 
-    grayscale = create_grayscale_variant(
-        mrz_crop
-    )
+    original_resized = resize_to_target_height(mrz_crop, TARGET_HEIGHT)
+    grayscale = create_grayscale_variant(mrz_crop)
+    thresholded = create_threshold_variant(grayscale)
 
-    thresholded = create_threshold_variant(
-        grayscale
-    )
-
-    cv2.imwrite(
-        str(original_path),
-        original_resized,
-    )
-
-    cv2.imwrite(
-        str(grayscale_path),
-        grayscale,
-    )
-
-    cv2.imwrite(
-        str(threshold_path),
-        thresholded,
-    )
+    cv2.imwrite(str(original_path), original_resized)
+    cv2.imwrite(str(grayscale_path), grayscale)
+    cv2.imwrite(str(threshold_path), thresholded)
 
     debug_image = image.copy()
-
-    # Vẽ toàn bộ candidate:
-    # candidate được chọn màu xanh, các candidate thừa màu đỏ.
-    for candidate in candidates:
-        bx1, by1, bx2, by2 = candidate["bbox"]
-        selected = candidate is best_candidate
-
-        color = (
-            (0, 255, 0)
-            if selected
-            else (0, 0, 255)
-        )
-
-        cv2.rectangle(
-            debug_image,
-            (bx1, by1),
-            (bx2, by2),
-            color,
-            3,
-        )
-
-        cv2.putText(
-            debug_image,
-            f"MRZ {candidate['confidence']:.3f}",
-            (bx1, max(25, by1 - 8)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            color,
-            2,
-            cv2.LINE_AA,
-        )
-
-    cv2.imwrite(
-        str(debug_path),
+    bx1, by1, bx2, by2 = raw_bbox
+    cv2.rectangle(debug_image, (bx1, by1), (bx2, by2), (0, 255, 0), 3)
+    confidence = parse_float(row.get("transformed_mrz_confidence"))
+    label = "MRZ" if confidence is None else f"MRZ {confidence:.3f}"
+    cv2.putText(
         debug_image,
+        label,
+        (bx1, max(25, by1 - 8)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 255, 0),
+        2,
+        cv2.LINE_AA,
     )
-
-    status = (
-        "success_single_mrz"
-        if len(candidates) == 1
-        else "success_multiple_mrz_selected_best"
-    )
+    cv2.imwrite(str(debug_path), debug_image)
 
     return {
-        "filename": image_path.name,
-        "relative_path": str(
-            image_path.relative_to(INPUT_DIR)
-        ),
-        "status": status,
-        "mrz_count": len(candidates),
-        "selected_confidence": round(
-            float(best_candidate["confidence"]),
-            6,
-        ),
+        **base,
+        "status": "success_reused_stage1_detection",
+        "mrz_count": 1,
+        "selected_confidence": confidence,
         "selected_bbox_x1": raw_bbox[0],
         "selected_bbox_y1": raw_bbox[1],
         "selected_bbox_x2": raw_bbox[2],
@@ -393,63 +255,19 @@ def process_one_image(
     }
 
 
-# ============================================================
-# CSV
-# ============================================================
+def write_csv(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
 
-def write_csv(
-    rows: list[dict[str, object]],
-) -> None:
-    fieldnames = sorted(
-        {
-            key
-            for row in rows
-            for key in row.keys()
-        }
-    )
-
-    with CSV_PATH.open(
-        "w",
-        newline="",
-        encoding="utf-8-sig",
-    ) as csv_file:
-        writer = csv.DictWriter(
-            csv_file,
-            fieldnames=fieldnames,
-        )
-
+    fieldnames = sorted({key for row in rows for key in row})
+    with CSV_PATH.open("w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
 def main() -> None:
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(
-            f"Không thấy model:\n{MODEL_PATH}"
-        )
-
-    if not INPUT_DIR.exists():
-        raise FileNotFoundError(
-            f"Không thấy input folder:\n{INPUT_DIR}"
-        )
-
-    image_paths = sorted(
-        path
-        for path in INPUT_DIR.rglob("*")
-        if (
-            path.is_file()
-            and path.suffix.lower() in IMAGE_EXTENSIONS
-        )
-    )
-
-    if not image_paths:
-        raise RuntimeError(
-            f"Không có ảnh trong:\n{INPUT_DIR}"
-        )
+    rows = load_processing_rows()
 
     for directory in (
         OUTPUT_ROOT,
@@ -458,97 +276,44 @@ def main() -> None:
         THRESHOLD_DIR,
         DEBUG_DIR,
     ):
-        directory.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+        directory.mkdir(parents=True, exist_ok=True)
 
-    print(f"Tổng ảnh passport page: {len(image_paths)}")
-    print(f"Input: {INPUT_DIR}")
-    print()
+    output_rows: list[dict[str, Any]] = []
 
-    model = YOLO(str(MODEL_PATH))
-    rows: list[dict[str, object]] = []
-
-    for index, image_path in enumerate(
-        image_paths,
-        start=1,
-    ):
+    for index, row in enumerate(rows, start=1):
         try:
-            row = process_one_image(
-                model=model,
-                image_path=image_path,
-            )
-
+            result = process_one_row(row)
         except Exception as error:
-            row = {
-                "filename": image_path.name,
-                "relative_path": str(
-                    image_path.relative_to(INPUT_DIR)
-                ),
+            result = {
+                "sample_id": row.get("sample_id"),
+                "filename": row.get("generated_filename"),
+                "source_filename": row.get("source_filename"),
+                "relative_path": row.get("relative_path"),
                 "status": "unexpected_error",
                 "mrz_count": None,
                 "selected_confidence": None,
                 "error": repr(error),
             }
 
-        rows.append(row)
-        write_csv(rows)
+        output_rows.append(result)
+        write_csv(output_rows)
 
         print(
-            f"[{index:>4}/{len(image_paths)}] "
-            f"{row['relative_path']} "
-            f"-> {row['status']}"
+            f"[{index:>4}/{len(rows)}] "
+            f"{result.get('sample_id')} -> {result['status']}"
         )
 
     status_counts: dict[str, int] = {}
-
-    for row in rows:
+    for row in output_rows:
         status = str(row["status"])
-        status_counts[status] = (
-            status_counts.get(status, 0) + 1
-        )
+        status_counts[status] = status_counts.get(status, 0) + 1
 
     print("\n" + "=" * 72)
-    print("KẾT QUẢ CROP MRZ")
+    print("KẾT QUẢ CROP MRZ - REUSED DETECTION")
     print("=" * 72)
-
-    for status, count in sorted(
-        status_counts.items()
-    ):
+    for status, count in sorted(status_counts.items()):
         print(f"{status:<40}: {count}")
-
-    selected_confidences = [
-        float(row["selected_confidence"])
-        for row in rows
-        if row.get("selected_confidence") is not None
-    ]
-
-    if selected_confidences:
-        print(
-            f"\nConfidence trung bình: "
-            f"{np.mean(selected_confidences):.4f}"
-        )
-
-        print(
-            f"Confidence thấp nhất : "
-            f"{np.min(selected_confidences):.4f}"
-        )
-
-    print("\nOriginal MRZ:")
-    print(ORIGINAL_DIR)
-
-    print("\nGrayscale MRZ:")
-    print(GRAYSCALE_DIR)
-
-    print("\nThreshold MRZ:")
-    print(THRESHOLD_DIR)
-
-    print("\nDebug:")
-    print(DEBUG_DIR)
-
-    print("\nCSV:")
-    print(CSV_PATH)
+    print(f"\nCSV: {CSV_PATH}")
 
 
 if __name__ == "__main__":
