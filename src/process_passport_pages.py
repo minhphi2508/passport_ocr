@@ -11,7 +11,7 @@ from device_config import YOLO_DEVICE
 
 
 # ============================================================
-# CẤU HÌNH
+# CONFIG
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -33,7 +33,11 @@ OUTPUT_ROOT = (
 CROP_DIR = OUTPUT_ROOT / "crops"
 TRANSFORMED_DIR = OUTPUT_ROOT / "transformed"
 DEBUG_DIR = OUTPUT_ROOT / "debug"
-CSV_PATH = OUTPUT_ROOT / "processing_results.csv"
+
+CSV_PATH = (
+    OUTPUT_ROOT
+    / "processing_results.csv"
+)
 
 IMAGE_EXTENSIONS = {
     ".jpg",
@@ -47,17 +51,23 @@ IMAGE_EXTENSIONS = {
 
 CONFIDENCE_THRESHOLD = 0.25
 IOU_THRESHOLD = 0.50
+
 CROP_PADDING_RATIO = 0.03
 
-# Cố ý đặt nghiêm ngặt:
-# perspective sai nguy hiểm hơn không perspective.
+
+# ============================================================
+# SAFE PERSPECTIVE CONFIG
+# ============================================================
+
+# Perspective sai nguy hiểm hơn
+# việc bỏ qua perspective.
 MIN_QUAD_AREA_RATIO = 0.72
 MIN_MRZ_INSIDE_RATIO = 0.95
 MAX_CONTOURS_TO_CHECK = 15
 
 
 # ============================================================
-# ORIENTATION RETRY CONFIG
+# ORIENTATION CONFIG
 # ============================================================
 
 ORIENTATION_ROTATIONS = {
@@ -68,7 +78,7 @@ ORIENTATION_ROTATIONS = {
 
 
 # ============================================================
-# HÀM CƠ BẢN
+# BASIC UTILITIES
 # ============================================================
 
 def safe_output_name(
@@ -100,6 +110,7 @@ def add_padding(
     image_height: int,
     padding_ratio: float,
 ) -> tuple[int, int, int, int]:
+
     x1, y1, x2, y2 = bbox
 
     width = x2 - x1
@@ -142,6 +153,7 @@ def add_padding(
 def order_points(
     points: np.ndarray,
 ) -> np.ndarray:
+
     points = points.astype(
         np.float32
     )
@@ -191,6 +203,7 @@ def perspective_warp(
     image: np.ndarray,
     corners: np.ndarray,
 ) -> np.ndarray:
+
     ordered = order_points(
         corners
     )
@@ -285,9 +298,7 @@ def perspective_warp(
             output_height,
         ),
         flags=cv2.INTER_CUBIC,
-        borderMode=(
-            cv2.BORDER_REPLICATE
-        ),
+        borderMode=cv2.BORDER_REPLICATE,
     )
 
 
@@ -297,11 +308,13 @@ def rotate_to_landscape(
     np.ndarray,
     bool,
 ]:
+
     height, width = (
         image.shape[:2]
     )
 
     if height > width:
+
         return (
             cv2.rotate(
                 image,
@@ -317,13 +330,13 @@ def rotate_to_landscape(
 
 
 # ============================================================
-# DETECTION
+# YOLO DETECTION
 # ============================================================
 
 def detect_objects(
     model: YOLO,
     image_source: Path | np.ndarray,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
 
     source = (
         str(
@@ -350,6 +363,7 @@ def detect_objects(
     mrz_candidates = []
 
     if result.boxes is not None:
+
         for box in result.boxes:
 
             class_id = int(
@@ -383,24 +397,16 @@ def detect_objects(
 
                 "bbox": (
                     int(
-                        round(
-                            x1
-                        )
+                        round(x1)
                     ),
                     int(
-                        round(
-                            y1
-                        )
+                        round(y1)
                     ),
                     int(
-                        round(
-                            x2
-                        )
+                        round(x2)
                     ),
                     int(
-                        round(
-                            y2
-                        )
+                        round(y2)
                     ),
                 ),
             }
@@ -409,6 +415,7 @@ def detect_objects(
                 class_name
                 == "passport_page"
             ):
+
                 passport_candidates.append(
                     item
                 )
@@ -417,21 +424,23 @@ def detect_objects(
                 class_name
                 == "mrz"
             ):
+
                 mrz_candidates.append(
                     item
                 )
 
     del result
 
-    if not passport_candidates:
-        return None
-
-    best_passport = max(
-        passport_candidates,
-        key=lambda item:
-            item[
-                "confidence"
-            ],
+    best_passport = (
+        max(
+            passport_candidates,
+            key=lambda item:
+                item[
+                    "confidence"
+                ],
+        )
+        if passport_candidates
+        else None
     )
 
     best_mrz = (
@@ -456,52 +465,153 @@ def detect_objects(
 
 
 # ============================================================
-# ORIENTATION RETRY
+# ORIENTATION CANDIDATE
 # ============================================================
 
-def detect_with_orientation_retry(
+def build_orientation_candidate(
+    angle: int,
+    image: np.ndarray,
+    detections: dict[str, object],
+) -> dict[str, object]:
+
+    passport = (
+        detections.get(
+            "passport"
+        )
+    )
+
+    mrz = (
+        detections.get(
+            "mrz"
+        )
+    )
+
+    return {
+        "angle":
+            angle,
+
+        "image":
+            image,
+
+        "detections":
+            detections,
+
+        "passport_detected":
+            passport is not None,
+
+        "passport_confidence":
+            (
+                float(
+                    passport[
+                        "confidence"
+                    ]
+                )
+                if passport
+                is not None
+                else None
+            ),
+
+        "mrz_detected":
+            mrz is not None,
+
+        "mrz_confidence":
+            (
+                float(
+                    mrz[
+                        "confidence"
+                    ]
+                )
+                if mrz
+                is not None
+                else None
+            ),
+    }
+
+
+# ============================================================
+# PASSPORT GATE V1
+# ============================================================
+
+def run_passport_gate(
     model: YOLO,
     image: np.ndarray,
-) -> tuple[
-    dict[str, object] | None,
-    np.ndarray,
-    bool,
-    int,
-]:
+) -> dict[str, object]:
     """
-    Detect passport ở orientation gốc trước.
+    Passport Gate V1.
 
-    Chỉ khi không detect được passport_page
-    mới thử lần lượt:
-    90°, 180°, 270°.
+    Outputs:
 
-    Nếu nhiều orientation đều detect được,
-    chọn orientation có passport confidence
-    cao nhất.
+    passport_confirmed
+        Có passport + MRZ ở cùng orientation.
+
+    passport_candidate
+        Có passport evidence nhưng chưa có MRZ.
+        KHÔNG reject.
+        Giữ lại để semantic verifier xử lý sau.
+
+    no_passport_evidence
+        Không orientation nào detect passport.
+        V1 chưa gọi đây là not_passport.
     """
 
-    # --------------------------------------------------------
-    # 1. ORIGINAL
-    # --------------------------------------------------------
+    # ========================================================
+    # 1. ORIGINAL ORIENTATION
+    # ========================================================
 
-    detections = detect_objects(
+    original_detections = detect_objects(
         model=model,
         image_source=image,
     )
 
-    if detections is not None:
-        return (
-            detections,
-            image,
-            False,
-            0,
+    original_candidate = (
+        build_orientation_candidate(
+            angle=0,
+            image=image,
+            detections=(
+                original_detections
+            ),
         )
+    )
 
-    # --------------------------------------------------------
-    # 2. RETRY ORIENTATIONS
-    # --------------------------------------------------------
+    # Nếu original đã có
+    # passport + MRZ thì evidence đủ mạnh.
+    if (
+        original_candidate[
+            "passport_detected"
+        ]
+        and original_candidate[
+            "mrz_detected"
+        ]
+    ):
 
-    candidates = []
+        return {
+            "passport_gate_status":
+                "passport_confirmed",
+
+            "passport_gate_reason":
+                "original_passport_plus_mrz",
+
+            "orientation_retry_used":
+                False,
+
+            "orientation_angle":
+                0,
+
+            "selected_candidate":
+                original_candidate,
+        }
+
+    # ========================================================
+    # 2. ORIGINAL CHƯA ĐỦ EVIDENCE
+    #
+    # Retry khi:
+    # - original không passport
+    # - hoặc passport nhưng thiếu MRZ
+    # ========================================================
+
+    candidates = [
+        original_candidate
+    ]
 
     for (
         angle,
@@ -515,85 +625,156 @@ def detect_with_orientation_retry(
             rotation_code,
         )
 
-        rotated_detections = (
-            detect_objects(
-                model=model,
-                image_source=rotated,
+        detections = detect_objects(
+            model=model,
+            image_source=rotated,
+        )
+
+        candidate = (
+            build_orientation_candidate(
+                angle=angle,
+                image=rotated,
+                detections=detections,
             )
         )
 
-        if (
-            rotated_detections
-            is None
-        ):
-            continue
-
-        passport_confidence = float(
-            rotated_detections[
-                "passport"
-            ][
-                "confidence"
-            ]
-        )
-
         candidates.append(
-            {
-                "angle":
-                    angle,
-
-                "image":
-                    rotated,
-
-                "detections":
-                    rotated_detections,
-
-                "passport_confidence":
-                    passport_confidence,
-            }
+            candidate
         )
 
-    # --------------------------------------------------------
-    # 3. VẪN KHÔNG DETECT ĐƯỢC
-    # --------------------------------------------------------
+    # ========================================================
+    # 3. STRONG CANDIDATES
+    # passport + MRZ
+    # ========================================================
 
-    if not candidates:
-        return (
-            None,
-            image,
-            True,
-            0,
-        )
-
-    # --------------------------------------------------------
-    # 4. CHỌN ORIENTATION TỐT NHẤT
-    # --------------------------------------------------------
-
-    best = max(
-        candidates,
-        key=lambda item:
-            item[
-                "passport_confidence"
-            ],
-    )
-
-    return (
-        best[
-            "detections"
-        ],
-        best[
-            "image"
-        ],
-        True,
-        int(
-            best[
-                "angle"
+    strong_candidates = [
+        candidate
+        for candidate in candidates
+        if (
+            candidate[
+                "passport_detected"
             ]
-        ),
-    )
+            and candidate[
+                "mrz_detected"
+            ]
+        )
+    ]
+
+    if strong_candidates:
+
+        # Passport confidence là chính.
+        # MRZ confidence dùng làm tie-breaker.
+        best = max(
+            strong_candidates,
+            key=lambda candidate: (
+                candidate[
+                    "passport_confidence"
+                ]
+                or 0.0,
+
+                candidate[
+                    "mrz_confidence"
+                ]
+                or 0.0,
+            ),
+        )
+
+        return {
+            "passport_gate_status":
+                "passport_confirmed",
+
+            "passport_gate_reason":
+                "orientation_passport_plus_mrz",
+
+            "orientation_retry_used":
+                True,
+
+            "orientation_angle":
+                int(
+                    best[
+                        "angle"
+                    ]
+                ),
+
+            "selected_candidate":
+                best,
+        }
+
+    # ========================================================
+    # 4. PASSPORT-ONLY CANDIDATES
+    #
+    # Không reject.
+    # Chọn candidate detector mạnh nhất và đánh dấu
+    # passport_candidate.
+    # ========================================================
+
+    passport_only_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate[
+            "passport_detected"
+        ]
+    ]
+
+    if passport_only_candidates:
+
+        best = max(
+            passport_only_candidates,
+            key=lambda candidate:
+                candidate[
+                    "passport_confidence"
+                ]
+                or 0.0,
+        )
+
+        return {
+            "passport_gate_status":
+                "passport_candidate",
+
+            "passport_gate_reason":
+                "passport_detected_without_mrz",
+
+            "orientation_retry_used":
+                True,
+
+            "orientation_angle":
+                int(
+                    best[
+                        "angle"
+                    ]
+                ),
+
+            "selected_candidate":
+                best,
+        }
+
+    # ========================================================
+    # 5. NO PASSPORT EVIDENCE
+    #
+    # V1 chưa reject semantic.
+    # Chỉ ghi nhận rằng detector không có evidence.
+    # ========================================================
+
+    return {
+        "passport_gate_status":
+            "no_passport_evidence",
+
+        "passport_gate_reason":
+            "no_passport_detected_any_orientation",
+
+        "orientation_retry_used":
+            True,
+
+        "orientation_angle":
+            None,
+
+        "selected_candidate":
+            None,
+    }
 
 
 # ============================================================
-# TẠO EDGE MAP
+# EDGE MAP
 # ============================================================
 
 def create_edge_map(
@@ -642,13 +823,11 @@ def create_edge_map(
         )
     )
 
-    edges = (
-        cv2.morphologyEx(
-            edges,
-            cv2.MORPH_CLOSE,
-            kernel,
-            iterations=2,
-        )
+    edges = cv2.morphologyEx(
+        edges,
+        cv2.MORPH_CLOSE,
+        kernel,
+        iterations=2,
     )
 
     return cv2.dilate(
@@ -659,32 +838,14 @@ def create_edge_map(
 
 
 # ============================================================
-# VALIDATION TỨ GIÁC
+# QUAD VALIDATION
 # ============================================================
 
 def bbox_to_crop_coordinates(
-    bbox:
-        tuple[
-            int,
-            int,
-            int,
-            int,
-        ],
+    bbox: tuple[int, int, int, int],
+    crop_bbox: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
 
-    crop_bbox:
-        tuple[
-            int,
-            int,
-            int,
-            int,
-        ],
-
-) -> tuple[
-    int,
-    int,
-    int,
-    int,
-]:
     (
         bx1,
         by1,
@@ -700,61 +861,37 @@ def bbox_to_crop_coordinates(
     ) = crop_bbox
 
     return (
-        bx1
-        - crop_x1,
-
-        by1
-        - crop_y1,
-
-        bx2
-        - crop_x1,
-
-        by2
-        - crop_y1,
+        bx1 - crop_x1,
+        by1 - crop_y1,
+        bx2 - crop_x1,
+        by2 - crop_y1,
     )
 
 
 def polygon_bbox_intersection_ratio(
     polygon: np.ndarray,
-
-    bbox:
-        tuple[
-            int,
-            int,
-            int,
-            int,
-        ],
-
-    image_shape:
-        tuple[
-            int,
-            int,
-        ],
-
+    bbox: tuple[int, int, int, int],
+    image_shape: tuple[int, int],
 ) -> float:
 
     height, width = (
         image_shape
     )
 
-    polygon_mask = (
-        np.zeros(
-            (
-                height,
-                width,
-            ),
-            dtype=np.uint8,
-        )
+    polygon_mask = np.zeros(
+        (
+            height,
+            width,
+        ),
+        dtype=np.uint8,
     )
 
-    bbox_mask = (
-        np.zeros(
-            (
-                height,
-                width,
-            ),
-            dtype=np.uint8,
-        )
+    bbox_mask = np.zeros(
+        (
+            height,
+            width,
+        ),
+        dtype=np.uint8,
     )
 
     polygon_int = (
@@ -852,13 +989,7 @@ def polygon_bbox_intersection_ratio(
 
 def quad_is_valid(
     corners: np.ndarray,
-
-    crop_shape:
-        tuple[
-            int,
-            int,
-        ],
-
+    crop_shape: tuple[int, int],
     mrz_bbox_in_crop:
         tuple[
             int,
@@ -867,7 +998,6 @@ def quad_is_valid(
             int,
         ]
         | None,
-
 ) -> tuple[
     bool,
     str,
@@ -904,6 +1034,7 @@ def quad_is_valid(
         area_ratio
         < MIN_QUAD_AREA_RATIO
     ):
+
         return (
             False,
             (
@@ -939,14 +1070,12 @@ def quad_is_valid(
         bottom_right[0],
     )
 
-    # Tứ giác phải phủ gần toàn bộ
-    # chiều rộng và chiều cao crop.
-
     if (
         left_x
         > crop_width
         * 0.18
     ):
+
         return (
             False,
             "left_edge_too_far_inside",
@@ -957,6 +1086,7 @@ def quad_is_valid(
         < crop_width
         * 0.82
     ):
+
         return (
             False,
             "right_edge_too_far_inside",
@@ -967,6 +1097,7 @@ def quad_is_valid(
         > crop_height
         * 0.18
     ):
+
         return (
             False,
             "top_edge_too_far_inside",
@@ -977,6 +1108,7 @@ def quad_is_valid(
         < crop_height
         * 0.82
     ):
+
         return (
             False,
             "bottom_edge_too_far_inside",
@@ -1004,6 +1136,7 @@ def quad_is_valid(
             mrz_inside_ratio
             < MIN_MRZ_INSIDE_RATIO
         ):
+
             return (
                 False,
                 (
@@ -1011,10 +1144,6 @@ def quad_is_valid(
                     f"{mrz_inside_ratio:.3f}"
                 ),
             )
-
-        # Cạnh dưới của tứ giác
-        # tuyệt đối không được nằm
-        # phía trên MRZ.
 
         (
             _,
@@ -1031,6 +1160,7 @@ def quad_is_valid(
                 * 0.02
             )
         ):
+
             return (
                 False,
                 "quad_ends_above_mrz",
@@ -1044,7 +1174,6 @@ def quad_is_valid(
 
 def find_page_corners(
     crop: np.ndarray,
-
     mrz_bbox_in_crop:
         tuple[
             int,
@@ -1053,7 +1182,6 @@ def find_page_corners(
             int,
         ]
         | None,
-
 ) -> tuple[
     np.ndarray | None,
     np.ndarray,
@@ -1064,15 +1192,17 @@ def find_page_corners(
         crop
     )
 
-    contours, _ = (
-        cv2.findContours(
-            edges,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE,
-        )
+    (
+        contours,
+        _,
+    ) = cv2.findContours(
+        edges,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
     )
 
     if not contours:
+
         return (
             None,
             edges,
@@ -1154,6 +1284,7 @@ def find_page_corners(
             )
 
             if valid:
+
                 return (
                     corners,
                     edges,
@@ -1165,6 +1296,7 @@ def find_page_corners(
             )
 
     if rejection_reasons:
+
         return (
             None,
             edges,
@@ -1186,7 +1318,6 @@ def save_debug_image(
     crop: np.ndarray,
     edges: np.ndarray,
     corners: np.ndarray | None,
-
     mrz_bbox:
         tuple[
             int,
@@ -1195,7 +1326,6 @@ def save_debug_image(
             int,
         ]
         | None,
-
     output_path: Path,
 ) -> None:
 
@@ -1254,7 +1384,10 @@ def save_debug_image(
             cv2.LINE_AA,
         )
 
-    if corners is not None:
+    if (
+        corners
+        is not None
+    ):
 
         ordered = (
             order_points(
@@ -1315,7 +1448,7 @@ def save_debug_image(
 
 
 # ============================================================
-# XỬ LÝ MỘT ẢNH
+# PROCESS ONE IMAGE
 # ============================================================
 
 def process_one_image(
@@ -1351,23 +1484,29 @@ def process_one_image(
         )
     )
 
+    relative_path = str(
+        image_path.relative_to(
+            INPUT_DIR
+        )
+    )
+
     if image is None:
+
         return {
             "filename":
                 image_path.name,
 
             "relative_path":
-                str(
-                    image_path.relative_to(
-                        INPUT_DIR
-                    )
-                ),
+                relative_path,
 
             "status":
                 "image_read_failed",
 
-            "validation_reason":
-                None,
+            "passport_gate_status":
+                "image_read_failed",
+
+            "passport_gate_reason":
+                "opencv_read_failed",
 
             "orientation_retry_used":
                 False,
@@ -1375,66 +1514,155 @@ def process_one_image(
             "orientation_angle":
                 None,
 
+            "passport_confidence":
+                None,
+
+            "mrz_detected":
+                False,
+
+            "mrz_confidence":
+                None,
+
+            "validation_reason":
+                None,
+
             "error":
                 (
-                    "OpenCV không "
-                    "đọc được ảnh."
+                    "OpenCV không đọc được ảnh."
                 ),
         }
 
     # ========================================================
-    # DETECT + ORIENTATION RETRY
+    # PASSPORT GATE
     # ========================================================
 
-    (
-        detections,
-        working_image,
-        orientation_retry_used,
-        orientation_angle,
-    ) = (
-        detect_with_orientation_retry(
-            model=model,
-            image=image,
-        )
+    gate_result = run_passport_gate(
+        model=model,
+        image=image,
     )
 
-    if detections is None:
+    gate_status = (
+        gate_result[
+            "passport_gate_status"
+        ]
+    )
+
+    gate_reason = (
+        gate_result[
+            "passport_gate_reason"
+        ]
+    )
+
+    orientation_retry_used = (
+        gate_result[
+            "orientation_retry_used"
+        ]
+    )
+
+    orientation_angle = (
+        gate_result[
+            "orientation_angle"
+        ]
+    )
+
+    selected_candidate = (
+        gate_result[
+            "selected_candidate"
+        ]
+    )
+
+    # ========================================================
+    # NO PASSPORT EVIDENCE
+    #
+    # Không tạo transformed image.
+    # Chưa gọi đây là not_passport.
+    # ========================================================
+
+    if (
+        selected_candidate
+        is None
+    ):
+
         return {
             "filename":
                 image_path.name,
 
             "relative_path":
-                str(
-                    image_path.relative_to(
-                        INPUT_DIR
-                    )
-                ),
+                relative_path,
 
             "status":
-                "passport_page_not_detected",
+                "no_passport_evidence",
 
-            "validation_reason":
-                None,
+            "passport_gate_status":
+                gate_status,
+
+            "passport_gate_reason":
+                gate_reason,
 
             "orientation_retry_used":
                 orientation_retry_used,
 
             "orientation_angle":
+                orientation_angle,
+
+            "passport_confidence":
+                None,
+
+            "mrz_detected":
+                False,
+
+            "mrz_confidence":
+                None,
+
+            "perspective_applied":
+                False,
+
+            "rotated_to_landscape":
+                False,
+
+            "validation_reason":
+                None,
+
+            "crop_width":
+                None,
+
+            "crop_height":
+                None,
+
+            "output_width":
+                None,
+
+            "output_height":
+                None,
+
+            "crop_path":
+                None,
+
+            "transformed_path":
+                None,
+
+            "debug_path":
                 None,
 
             "error":
                 None,
         }
 
-    # Từ đây trở đi bbox YOLO thuộc
-    # hệ tọa độ của working_image.
+    # ========================================================
+    # SELECTED ORIENTATION
+    # ========================================================
 
-    image = working_image
+    working_image = (
+        selected_candidate[
+            "image"
+        ]
+    )
 
-    (
-        image_height,
-        image_width,
-    ) = image.shape[:2]
+    detections = (
+        selected_candidate[
+            "detections"
+        ]
+    )
 
     passport = (
         detections[
@@ -1448,27 +1676,32 @@ def process_one_image(
         ]
     )
 
+    image = working_image
+
+    (
+        image_height,
+        image_width,
+    ) = image.shape[:2]
+
     # ========================================================
     # PASSPORT CROP
     # ========================================================
 
-    padded_bbox = (
-        add_padding(
-            bbox=(
-                passport[
-                    "bbox"
-                ]
-            ),
-            image_width=(
-                image_width
-            ),
-            image_height=(
-                image_height
-            ),
-            padding_ratio=(
-                CROP_PADDING_RATIO
-            ),
-        )
+    padded_bbox = add_padding(
+        bbox=(
+            passport[
+                "bbox"
+            ]
+        ),
+        image_width=(
+            image_width
+        ),
+        image_height=(
+            image_height
+        ),
+        padding_ratio=(
+            CROP_PADDING_RATIO
+        ),
     )
 
     (
@@ -1484,28 +1717,46 @@ def process_one_image(
     ]
 
     if crop.size == 0:
+
         return {
             "filename":
                 image_path.name,
 
             "relative_path":
-                str(
-                    image_path.relative_to(
-                        INPUT_DIR
-                    )
-                ),
+                relative_path,
 
             "status":
                 "empty_crop",
 
-            "validation_reason":
-                None,
+            "passport_gate_status":
+                gate_status,
+
+            "passport_gate_reason":
+                gate_reason,
 
             "orientation_retry_used":
                 orientation_retry_used,
 
             "orientation_angle":
                 orientation_angle,
+
+            "passport_confidence":
+                selected_candidate[
+                    "passport_confidence"
+                ],
+
+            "mrz_detected":
+                selected_candidate[
+                    "mrz_detected"
+                ],
+
+            "mrz_confidence":
+                selected_candidate[
+                    "mrz_confidence"
+                ],
+
+            "validation_reason":
+                None,
 
             "error":
                 "Crop rỗng.",
@@ -1524,7 +1775,9 @@ def process_one_image(
 
     mrz_bbox_in_crop = None
 
-    if mrz is not None:
+    if (
+        mrz is not None
+    ):
 
         mrz_bbox_in_crop = (
             bbox_to_crop_coordinates(
@@ -1557,7 +1810,10 @@ def process_one_image(
     perspective_applied = False
     rotated = False
 
-    if corners is not None:
+    if (
+        corners
+        is not None
+    ):
 
         try:
 
@@ -1648,17 +1904,16 @@ def process_one_image(
             image_path.name,
 
         "relative_path":
-            str(
-                image_path.relative_to(
-                    INPUT_DIR
-                )
-            ),
+            relative_path,
 
         "status":
             status,
 
-        "validation_reason":
-            validation_reason,
+        "passport_gate_status":
+            gate_status,
+
+        "passport_gate_reason":
+            gate_reason,
 
         "orientation_retry_used":
             orientation_retry_used,
@@ -1667,26 +1922,47 @@ def process_one_image(
             orientation_angle,
 
         "passport_confidence":
-            round(
-                float(
-                    passport[
-                        "confidence"
+            (
+                round(
+                    float(
+                        selected_candidate[
+                            "passport_confidence"
+                        ]
+                    ),
+                    6,
+                )
+                if (
+                    selected_candidate[
+                        "passport_confidence"
                     ]
-                ),
-                6,
+                    is not None
+                )
+                else None
+            ),
+
+        "mrz_detected":
+            bool(
+                selected_candidate[
+                    "mrz_detected"
+                ]
             ),
 
         "mrz_confidence":
             (
                 round(
                     float(
-                        mrz[
-                            "confidence"
+                        selected_candidate[
+                            "mrz_confidence"
                         ]
                     ),
                     6,
                 )
-                if mrz is not None
+                if (
+                    selected_candidate[
+                        "mrz_confidence"
+                    ]
+                    is not None
+                )
                 else None
             ),
 
@@ -1695,6 +1971,9 @@ def process_one_image(
 
         "rotated_to_landscape":
             rotated,
+
+        "validation_reason":
+            validation_reason,
 
         "crop_width":
             crop.shape[1],
@@ -1729,7 +2008,7 @@ def process_one_image(
 
 
 # ============================================================
-# MAIN
+# CSV
 # ============================================================
 
 def write_csv(
@@ -1762,14 +2041,22 @@ def write_csv(
         )
 
         writer.writeheader()
+
         writer.writerows(
             rows
         )
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 def main() -> None:
 
-    if not MODEL_PATH.exists():
+    if (
+        not MODEL_PATH.exists()
+    ):
+
         raise FileNotFoundError(
             f"Không thấy model:\n"
             f"{MODEL_PATH}"
@@ -1777,10 +2064,8 @@ def main() -> None:
 
     image_paths = sorted(
         path
-        for path in (
-            INPUT_DIR.rglob(
-                "*"
-            )
+        for path in INPUT_DIR.rglob(
+            "*"
         )
         if (
             path.is_file()
@@ -1789,7 +2074,10 @@ def main() -> None:
         )
     )
 
-    if not image_paths:
+    if (
+        not image_paths
+    ):
+
         raise RuntimeError(
             f"Không có ảnh trong:\n"
             f"{INPUT_DIR}"
@@ -1855,13 +2143,28 @@ def main() -> None:
                 "status":
                     "unexpected_error",
 
-                "validation_reason":
+                "passport_gate_status":
+                    "unexpected_error",
+
+                "passport_gate_reason":
                     None,
 
                 "orientation_retry_used":
                     None,
 
                 "orientation_angle":
+                    None,
+
+                "passport_confidence":
+                    None,
+
+                "mrz_detected":
+                    None,
+
+                "mrz_confidence":
+                    None,
+
+                "validation_reason":
                     None,
 
                 "error":
@@ -1886,69 +2189,27 @@ def main() -> None:
             f"] "
             f"{row['relative_path']} "
             f"-> "
+            f"{row['passport_gate_status']} "
+            f"| process="
             f"{row['status']} "
-            f"("
-            f"{row.get('validation_reason')}"
-            f") "
-            f"orientation="
-            f"{row.get('orientation_angle')}"
+            f"| angle="
+            f"{row.get('orientation_angle')} "
+            f"| MRZ="
+            f"{row.get('mrz_detected')}"
         )
 
     # ========================================================
     # SUMMARY
     # ========================================================
 
-    status_counts = {}
+    process_status_counts = {}
 
-    for row in rows:
+    gate_status_counts = {}
 
-        status = str(
-            row[
-                "status"
-            ]
-        )
+    gate_reason_counts = {}
 
-        status_counts[
-            status
-        ] = (
-            status_counts.get(
-                status,
-                0,
-            )
-            + 1
-        )
-
-    orientation_retry_count = sum(
-        1
-        for row in rows
-        if (
-            row.get(
-                "orientation_retry_used"
-            )
-            is True
-        )
-    )
-
-    orientation_rescued_count = sum(
-        1
-        for row in rows
-        if (
-            row.get(
-                "orientation_retry_used"
-            )
-            is True
-            and row.get(
-                "status"
-            )
-            not in {
-                "passport_page_not_detected",
-                "image_read_failed",
-                "unexpected_error",
-            }
-        )
-    )
-
-    orientation_angle_counts = {
+    angle_counts = {
+        0: 0,
         90: 0,
         180: 0,
         270: 0,
@@ -1956,36 +2217,94 @@ def main() -> None:
 
     for row in rows:
 
+        process_status = str(
+            row.get(
+                "status"
+            )
+        )
+
+        gate_status = str(
+            row.get(
+                "passport_gate_status"
+            )
+        )
+
+        gate_reason = row.get(
+            "passport_gate_reason"
+        )
+
+        process_status_counts[
+            process_status
+        ] = (
+            process_status_counts.get(
+                process_status,
+                0,
+            )
+            + 1
+        )
+
+        gate_status_counts[
+            gate_status
+        ] = (
+            gate_status_counts.get(
+                gate_status,
+                0,
+            )
+            + 1
+        )
+
+        if gate_reason:
+
+            gate_reason_counts[
+                gate_reason
+            ] = (
+                gate_reason_counts.get(
+                    gate_reason,
+                    0,
+                )
+                + 1
+            )
+
         angle = row.get(
             "orientation_angle"
         )
 
         if (
             angle
-            in orientation_angle_counts
+            in angle_counts
         ):
-            orientation_angle_counts[
+
+            angle_counts[
                 angle
             ] += 1
 
+    print()
     print(
-        "\n"
-        + "=" * 72
+        "=" * 76
     )
 
     print(
-        "KẾT QUẢ PERSPECTIVE AN TOÀN"
+        "PASSPORT GATE V1 SUMMARY"
     )
 
     print(
-        "=" * 72
+        "=" * 76
+    )
+
+    print()
+    print(
+        "GATE STATUS"
+    )
+
+    print(
+        "-" * 76
     )
 
     for (
         status,
         count,
     ) in sorted(
-        status_counts.items()
+        gate_status_counts.items()
     ):
 
         print(
@@ -1995,40 +2314,71 @@ def main() -> None:
 
     print()
     print(
-        "ORIENTATION RETRY"
+        "GATE REASONS"
     )
 
     print(
-        "-" * 72
+        "-" * 76
+    )
+
+    for (
+        reason,
+        count,
+    ) in sorted(
+        gate_reason_counts.items()
+    ):
+
+        print(
+            f"{reason:<40}: "
+            f"{count}"
+        )
+
+    print()
+    print(
+        "SELECTED ORIENTATION"
     )
 
     print(
-        f"Retry used                      : "
-        f"{orientation_retry_count}"
+        "-" * 76
+    )
+
+    for angle in (
+        0,
+        90,
+        180,
+        270,
+    ):
+
+        print(
+            f"{angle:>3}°"
+            f"{'':<28}: "
+            f"{angle_counts[angle]}"
+        )
+
+    print()
+    print(
+        "PROCESS STATUS"
     )
 
     print(
-        f"Successfully rescued            : "
-        f"{orientation_rescued_count}"
+        "-" * 76
     )
 
-    print(
-        f"Selected 90°                    : "
-        f"{orientation_angle_counts[90]}"
-    )
+    for (
+        status,
+        count,
+    ) in sorted(
+        process_status_counts.items()
+    ):
 
-    print(
-        f"Selected 180°                   : "
-        f"{orientation_angle_counts[180]}"
-    )
+        print(
+            f"{status:<32}: "
+            f"{count}"
+        )
 
+    print()
     print(
-        f"Selected 270°                   : "
-        f"{orientation_angle_counts[270]}"
-    )
-
-    print(
-        "\nOutput:"
+        "Output:"
     )
 
     print(

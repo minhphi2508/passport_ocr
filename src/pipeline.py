@@ -5,19 +5,39 @@ import shutil
 import subprocess
 import sys
 import time
+
 from pathlib import Path
-from device_config import print_device_summary
+
+from device_config import (
+    print_device_summary,
+)
 
 
 # ============================================================
 # PROJECT
 # ============================================================
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SRC_DIR = PROJECT_ROOT / "src"
+PROJECT_ROOT = (
+    Path(__file__)
+    .resolve()
+    .parent
+    .parent
+)
 
-INPUT_DIR = PROJECT_ROOT / "input_images"
-OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+SRC_DIR = (
+    PROJECT_ROOT
+    / "src"
+)
+
+INPUT_DIR = (
+    PROJECT_ROOT
+    / "input_images"
+)
+
+OUTPUTS_DIR = (
+    PROJECT_ROOT
+    / "outputs"
+)
 
 
 # ============================================================
@@ -26,44 +46,91 @@ OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 
 STAGES = [
     {
-        "name": "Detect + Process Passport Pages",
-        "script": "process_passport_pages.py",
+        "name":
+            "Detect + Process Passport Pages",
+
+        "script":
+            "process_passport_pages.py",
     },
+
     {
-        "name": "Crop MRZ",
-        "script": "crop_mrz_batch.py",
+        "name":
+            "Crop MRZ",
+
+        "script":
+            "crop_mrz_batch.py",
     },
+
     {
-        "name": "OCR MRZ",
-        "script": "ocr_mrz_batch.py",
+        "name":
+            "OCR MRZ",
+
+        "script":
+            "ocr_mrz_batch.py",
     },
+
     {
-        "name": "Parse TD3",
-        "script": "parse_mrz_results.py",
+        "name":
+            "Parse TD3",
+
+        "script":
+            "parse_mrz_results.py",
     },
+
     {
-        "name": "Validate MRZ",
-        "script": "validate_mrz_results.py",
+        "name":
+            "Validate MRZ",
+
+        "script":
+            "validate_mrz_results.py",
     },
+
     {
-        "name": "Crop VIZ",
-        "script": "crop_viz_batch.py",
+        "name":
+            "Crop VIZ",
+
+        "script":
+            "crop_viz_batch.py",
     },
+
     {
-        "name": "Preprocess VIZ",
-        "script": "preprocess_viz_batch.py",
+        "name":
+            "Preprocess VIZ",
+
+        "script":
+            "preprocess_viz_batch.py",
     },
+
     {
-        "name": "OCR VIZ",
-        "script": "ocr_viz_batch.py",
+        "name":
+            "OCR VIZ",
+
+        "script":
+            "ocr_viz_batch.py",
     },
+
     {
-        "name": "Extract Date of Issue",
-        "script": "extract_date_of_issue.py",
+        "name":
+            "Extract VIZ Fields",
+
+        "script":
+            "extract_viz_fields.py",
     },
+
     {
-        "name": "Build Final Results",
-        "script": "build_final_results.py",
+        "name":
+            "Extract Date of Issue",
+
+        "script":
+            "extract_date_of_issue.py",
+    },
+
+    {
+        "name":
+            "Build Final Results",
+
+        "script":
+            "build_final_results.py",
     },
 ]
 
@@ -72,23 +139,36 @@ STAGES = [
 # OUTPUT FOLDERS
 # ============================================================
 
-#
-# Chỉ các output được sinh tự động bởi pipeline.
-# Không đụng vào:
-# - input_images
-# - models
-# - src
-#
 GENERATED_OUTPUT_DIRS = [
-    OUTPUTS_DIR / "passport_pages_safe",
-    OUTPUTS_DIR / "mrz_stage",
-    OUTPUTS_DIR / "mrz_ocr",
-    OUTPUTS_DIR / "mrz_parsed",
-    OUTPUTS_DIR / "mrz_validated",
-    OUTPUTS_DIR / "viz_stage",
-    OUTPUTS_DIR / "viz_ocr",
-    OUTPUTS_DIR / "date_of_issue_hybrid_v3",
-    OUTPUTS_DIR / "final_results",
+    OUTPUTS_DIR
+    / "passport_pages_safe",
+
+    OUTPUTS_DIR
+    / "mrz_stage",
+
+    OUTPUTS_DIR
+    / "mrz_ocr",
+
+    OUTPUTS_DIR
+    / "mrz_parsed",
+
+    OUTPUTS_DIR
+    / "mrz_validated",
+
+    OUTPUTS_DIR
+    / "viz_stage",
+
+    OUTPUTS_DIR
+    / "viz_ocr",
+
+    OUTPUTS_DIR
+    / "viz_fields",
+
+    OUTPUTS_DIR
+    / "date_of_issue_hybrid_v3",
+
+    OUTPUTS_DIR
+    / "final_results",
 ]
 
 
@@ -97,29 +177,51 @@ GENERATED_OUTPUT_DIRS = [
 # ============================================================
 
 def check_scripts() -> None:
+
     missing = []
 
     for stage in STAGES:
-        script_path = SRC_DIR / stage["script"]
+
+        script_path = (
+            SRC_DIR
+            / stage[
+                "script"
+            ]
+        )
 
         if not script_path.exists():
-            missing.append(script_path)
+
+            missing.append(
+                script_path
+            )
 
     if missing:
-        print("\nThiếu script:")
+
+        print()
+
+        print(
+            "Thiếu script:"
+        )
 
         for path in missing:
-            print(f"  - {path}")
+
+            print(
+                f"  - {path}"
+            )
 
         raise FileNotFoundError(
-            "Không thể chạy pipeline vì thiếu script."
+            "Không thể chạy pipeline "
+            "vì thiếu script."
         )
 
 
 def check_input_images() -> None:
+
     if not INPUT_DIR.exists():
+
         raise FileNotFoundError(
-            f"Không thấy input folder:\n{INPUT_DIR}"
+            f"Không thấy input folder:\n"
+            f"{INPUT_DIR}"
         )
 
     image_extensions = {
@@ -134,7 +236,10 @@ def check_input_images() -> None:
 
     images = [
         path
-        for path in INPUT_DIR.rglob("*")
+        for path
+        in INPUT_DIR.rglob(
+            "*"
+        )
         if (
             path.is_file()
             and path.suffix.lower()
@@ -143,12 +248,15 @@ def check_input_images() -> None:
     ]
 
     if not images:
+
         raise RuntimeError(
-            f"Không có ảnh trong:\n{INPUT_DIR}"
+            f"Không có ảnh trong:\n"
+            f"{INPUT_DIR}"
         )
 
     print(
-        f"Input images : {len(images)}"
+        f"Input images : "
+        f"{len(images)}"
     )
 
 
@@ -156,15 +264,32 @@ def check_input_images() -> None:
 # CLEAN OUTPUT
 # ============================================================
 
-def clean_generated_outputs() -> None:
-    print()
-    print("=" * 76)
-    print("FRESH RUN - XÓA OUTPUT CŨ")
-    print("=" * 76)
+def clean_generated_outputs(
+) -> None:
 
-    for directory in GENERATED_OUTPUT_DIRS:
+    print()
+
+    print(
+        "=" * 76
+    )
+
+    print(
+        "FRESH RUN - XÓA OUTPUT CŨ"
+    )
+
+    print(
+        "=" * 76
+    )
+
+    for directory in (
+        GENERATED_OUTPUT_DIRS
+    ):
+
         if directory.exists():
-            shutil.rmtree(directory)
+
+            shutil.rmtree(
+                directory
+            )
 
             print(
                 f"Removed: "
@@ -172,6 +297,7 @@ def clean_generated_outputs() -> None:
             )
 
     print()
+
     print(
         "✓ Output cũ đã được dọn."
     )
@@ -188,28 +314,45 @@ def run_stage(
     script: str,
 ) -> None:
 
-    script_path = SRC_DIR / script
+    script_path = (
+        SRC_DIR
+        / script
+    )
 
     print()
-    print("=" * 76)
 
     print(
-        f"[{stage_number}/{total_stages}] "
+        "=" * 76
+    )
+
+    print(
+        f"["
+        f"{stage_number}"
+        f"/"
+        f"{total_stages}"
+        f"] "
         f"{name}"
     )
 
-    print("=" * 76)
-
     print(
-        f"Script: {script}"
+        "=" * 76
     )
 
-    start_time = time.time()
+    print(
+        f"Script: "
+        f"{script}"
+    )
+
+    start_time = (
+        time.time()
+    )
 
     result = subprocess.run(
         [
             sys.executable,
-            str(script_path),
+            str(
+                script_path
+            ),
         ],
         cwd=PROJECT_ROOT,
     )
@@ -219,18 +362,33 @@ def run_stage(
         - start_time
     )
 
-    if result.returncode != 0:
+    if (
+        result.returncode
+        != 0
+    ):
+
         print()
-        print("=" * 76)
-        print("PIPELINE DỪNG")
-        print("=" * 76)
 
         print(
-            f"Stage lỗi : {name}"
+            "=" * 76
         )
 
         print(
-            f"Script     : {script}"
+            "PIPELINE DỪNG"
+        )
+
+        print(
+            "=" * 76
+        )
+
+        print(
+            f"Stage lỗi : "
+            f"{name}"
+        )
+
+        print(
+            f"Script     : "
+            f"{script}"
         )
 
         print(
@@ -239,12 +397,15 @@ def run_stage(
         )
 
         raise RuntimeError(
-            f"Stage failed: {name}"
+            f"Stage failed: "
+            f"{name}"
         )
 
     print()
+
     print(
-        f"✓ Hoàn thành: {name}"
+        f"✓ Hoàn thành: "
+        f"{name}"
     )
 
     print(
@@ -257,7 +418,8 @@ def run_stage(
 # FINAL OUTPUT CHECK
 # ============================================================
 
-def print_final_output() -> None:
+def print_final_output(
+) -> None:
 
     final_csv = (
         OUTPUTS_DIR
@@ -272,26 +434,41 @@ def print_final_output() -> None:
     )
 
     print()
-    print("=" * 76)
-    print("FINAL OUTPUT")
-    print("=" * 76)
+
+    print(
+        "=" * 76
+    )
+
+    print(
+        "FINAL OUTPUT"
+    )
+
+    print(
+        "=" * 76
+    )
 
     if final_csv.exists():
+
         print(
-            f"CSV : {final_csv}"
+            f"CSV : "
+            f"{final_csv}"
         )
 
     else:
+
         print(
             "CSV : chưa được tạo"
         )
 
     if final_json.exists():
+
         print(
-            f"JSON: {final_json}"
+            f"JSON: "
+            f"{final_json}"
         )
 
     else:
+
         print(
             "JSON: chưa được tạo"
         )
@@ -309,14 +486,22 @@ def run_pipeline(
 
     check_scripts()
 
-    total_stages = len(STAGES)
+    total_stages = len(
+        STAGES
+    )
 
     if end_stage is None:
-        end_stage = total_stages
+
+        end_stage = (
+            total_stages
+        )
 
     if not (
-        1 <= start_stage <= total_stages
+        1
+        <= start_stage
+        <= total_stages
     ):
+
         raise ValueError(
             f"start-stage phải nằm trong "
             f"1 → {total_stages}"
@@ -327,22 +512,35 @@ def run_pipeline(
         <= end_stage
         <= total_stages
     ):
+
         raise ValueError(
             f"end-stage phải nằm trong "
-            f"{start_stage} → {total_stages}"
+            f"{start_stage} → "
+            f"{total_stages}"
         )
 
-    #
-    # Chỉ stage 1 mới cần kiểm tra input_images.
-    #
-    if start_stage == 1:
+    # ========================================================
+    # INPUT CHECK
+    # ========================================================
+
+    if (
+        start_stage
+        == 1
+    ):
+
         check_input_images()
 
-    #
-    # Fresh chỉ hợp lý khi chạy từ đầu.
-    #
+    # ========================================================
+    # FRESH
+    # ========================================================
+
     if fresh:
-        if start_stage != 1:
+
+        if (
+            start_stage
+            != 1
+        ):
+
             raise ValueError(
                 "--fresh chỉ được dùng khi "
                 "--start-stage 1."
@@ -350,29 +548,50 @@ def run_pipeline(
 
         clean_generated_outputs()
 
+    # ========================================================
+    # HEADER
+    # ========================================================
+
     print()
-    print("=" * 76)
-    print("PASSPORT OCR END-TO-END PIPELINE")
-    print("=" * 76)
 
     print(
-        f"Project root : {PROJECT_ROOT}"
+        "=" * 76
     )
 
     print(
-        f"Python       : {sys.executable}"
+        "PASSPORT OCR END-TO-END PIPELINE"
+    )
+
+    print(
+        "=" * 76
+    )
+
+    print(
+        f"Project root : "
+        f"{PROJECT_ROOT}"
+    )
+
+    print(
+        f"Python       : "
+        f"{sys.executable}"
     )
 
     print(
         f"Stages       : "
-        f"{start_stage} → {end_stage}"
+        f"{start_stage}"
+        f" → "
+        f"{end_stage}"
     )
 
     print(
-        f"Fresh run    : {fresh}"
+        f"Fresh run    : "
+        f"{fresh}"
     )
+
     print()
+
     print_device_summary()
+
     selected_stages = STAGES[
         start_stage - 1:
         end_stage
@@ -382,15 +601,34 @@ def run_pipeline(
         time.time()
     )
 
-    for stage_number, stage in enumerate(
+    for (
+        stage_number,
+        stage,
+    ) in enumerate(
         selected_stages,
         start=start_stage,
     ):
+
         run_stage(
-            stage_number=stage_number,
-            total_stages=total_stages,
-            name=stage["name"],
-            script=stage["script"],
+            stage_number=(
+                stage_number
+            ),
+
+            total_stages=(
+                total_stages
+            ),
+
+            name=(
+                stage[
+                    "name"
+                ]
+            ),
+
+            script=(
+                stage[
+                    "script"
+                ]
+            ),
         )
 
     total_elapsed = (
@@ -399,16 +637,29 @@ def run_pipeline(
     )
 
     print()
-    print("=" * 76)
-    print("PIPELINE HOÀN THÀNH")
-    print("=" * 76)
+
+    print(
+        "=" * 76
+    )
+
+    print(
+        "PIPELINE HOÀN THÀNH"
+    )
+
+    print(
+        "=" * 76
+    )
 
     print(
         f"Tổng thời gian: "
         f"{total_elapsed:.1f}s"
     )
 
-    if end_stage == total_stages:
+    if (
+        end_stage
+        == total_stages
+    ):
+
         print_final_output()
 
 
@@ -416,7 +667,8 @@ def run_pipeline(
 # LIST STAGES
 # ============================================================
 
-def print_stage_list() -> None:
+def print_stage_list(
+) -> None:
 
     print(
         "PASSPORT OCR PIPELINE STAGES"
@@ -426,10 +678,14 @@ def print_stage_list() -> None:
         "=" * 76
     )
 
-    for index, stage in enumerate(
+    for (
+        index,
+        stage,
+    ) in enumerate(
         STAGES,
         start=1,
     ):
+
         print(
             f"{index:>2}. "
             f"{stage['name']:<34} "
@@ -443,9 +699,12 @@ def print_stage_list() -> None:
 
 def main() -> None:
 
-    parser = argparse.ArgumentParser(
-        description=(
-            "Passport OCR end-to-end pipeline."
+    parser = (
+        argparse.ArgumentParser(
+            description=(
+                "Passport OCR "
+                "end-to-end pipeline."
+            )
         )
     )
 
@@ -473,8 +732,8 @@ def main() -> None:
         "--list-stages",
         action="store_true",
         help=(
-            "In danh sách pipeline stages "
-            "và thoát."
+            "In danh sách pipeline "
+            "stages và thoát."
         ),
     )
 
@@ -487,16 +746,30 @@ def main() -> None:
         ),
     )
 
-    args = parser.parse_args()
+    args = (
+        parser.parse_args()
+    )
 
-    if args.list_stages:
+    if (
+        args.list_stages
+    ):
+
         print_stage_list()
+
         return
 
     run_pipeline(
-        start_stage=args.start_stage,
-        end_stage=args.end_stage,
-        fresh=args.fresh,
+        start_stage=(
+            args.start_stage
+        ),
+
+        end_stage=(
+            args.end_stage
+        ),
+
+        fresh=(
+            args.fresh
+        ),
     )
 
 
