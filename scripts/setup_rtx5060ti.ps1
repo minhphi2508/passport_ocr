@@ -25,7 +25,9 @@ python -m pip install -r requirements.txt
 
 Write-Host ""
 Write-Host "[2/4] Installing PyTorch 2.8.0 / CUDA 12.8..."
-python -m pip uninstall -y torch torchvision torchaudio 2>$null
+$ErrorActionPreference = "Continue"
+python -m pip uninstall -y torch torchvision torchaudio
+$ErrorActionPreference = "Stop"
 python -m pip install `
     torch==2.8.0 `
     torchvision==0.23.0 `
@@ -33,7 +35,9 @@ python -m pip install `
 
 Write-Host ""
 Write-Host "[3/4] Installing PaddlePaddle GPU 3.3.0 / CUDA 12.9..."
-python -m pip uninstall -y paddlepaddle paddlepaddle-gpu 2>$null
+$ErrorActionPreference = "Continue"
+python -m pip uninstall -y paddlepaddle paddlepaddle-gpu
+$ErrorActionPreference = "Stop"
 python -m pip install `
     paddlepaddle-gpu==3.3.0 `
     -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
