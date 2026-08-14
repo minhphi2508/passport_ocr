@@ -3,1925 +3,1163 @@ from __future__ import annotations
 import csv
 import json
 import re
-from datetime import date
+import unicodedata
+from datetime import date, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
-
-
-# ============================================================
-# PATHS
-# ============================================================
+from typing import Any, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-VIZ_JSON = (
-    PROJECT_ROOT
-    / "outputs"
-    / "viz_ocr"
-    / "viz_ocr_full.json"
-)
+VIZ_JSON = PROJECT_ROOT / "outputs" / "viz_ocr" / "viz_ocr_full.json"
+VIZ_JSONL = PROJECT_ROOT / "outputs" / "viz_ocr" / "viz_ocr_records.jsonl"
 
-MRZ_CSV = (
-    PROJECT_ROOT
-    / "outputs"
-    / "mrz_parsed"
-    / "mrz_parsed_results.csv"
+MRZ_PARSED_CSV = (
+    PROJECT_ROOT / "outputs" / "mrz_parsed" / "mrz_parsed_results.csv"
+)
+MRZ_VALIDATED_CSV = (
+    PROJECT_ROOT / "outputs" / "mrz_validated" / "mrz_validated_results.csv"
+)
+VIZ_FIELDS_CSV = (
+    PROJECT_ROOT / "outputs" / "viz_fields" / "viz_fields_results.csv"
 )
 
 OUTPUT_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "date_of_issue_hybrid_v3"
+    PROJECT_ROOT / "outputs" / "date_of_issue_hybrid_v3"
 )
+OUTPUT_CSV = OUTPUT_DIR / "date_of_issue_hybrid_v3_results.csv"
+OUTPUT_JSON = OUTPUT_DIR / "date_of_issue_hybrid_v3_results.json"
 
-OUTPUT_CSV = (
-    OUTPUT_DIR
-    / "date_of_issue_hybrid_v3_results.csv"
-)
+# Keep the historical output folder/file names so the rest of the pipeline
+# remains backward compatible. Internally this is DOI extractor V5.
+EXTRACTOR_VERSION = "doi_v6_1"
 
-OUTPUT_JSON = (
-    OUTPUT_DIR
-    / "date_of_issue_hybrid_v3_results.json"
-)
-
-
-# ============================================================
-# LABEL VOCAB
-# ============================================================
-
-ISSUE_LABELS = [
+ISSUE_LABELS = (
     "date of issue",
     "issue date",
     "date issued",
     "date of issuance",
+    "issuing date",
     "iss date",
     "iss. date",
-    "issuing date",
-
     "date de delivrance",
     "date de délivrance",
     "date d emission",
     "date d'émission",
-
     "fecha de expedicion",
     "fecha de expedición",
     "fecha de emision",
     "fecha de emisión",
-
     "data di rilascio",
     "data wydania",
     "ausstellungsdatum",
     "datum van afgifte",
     "isavimo data",
     "išdavimo data",
-]
+    "date of grant",
+    "grant date",
+)
 
-STRONG_LABEL_KEYWORDS = {
-    "issue",
-    "issued",
-    "issuance",
-    "iss",
-    "delivrance",
-    "expedicion",
-    "emision",
-    "rilascio",
-    "wydania",
-    "ausstellung",
-    "afgifte",
-    "isavimo",
-    "isdavimo",
+NEGATIVE_DATE_LABELS = (
+    "date of birth",
+    "birth date",
+    "date de naissance",
+    "fecha de nacimiento",
+    "datum urodzenia",
+    "geburtsdatum",
+    "date of expiry",
+    "expiry date",
+    "expiration date",
+    "date of expiration",
+    "date d expiration",
+    "fecha de expiracion",
+    "fecha de caducidad",
+    "valid until",
+    "valid thru",
+    "valid through",
+)
+
+MONTHS = {
+    "jan": 1, "january": 1, "janvier": 1, "januar": 1,
+    "feb": 2, "february": 2, "fevrier": 2, "februar": 2,
+    "mar": 3, "march": 3, "mars": 3, "marzo": 3,
+    "apr": 4, "april": 4, "avr": 4, "avril": 4, "abril": 4,
+    "may": 5, "mai": 5, "mayo": 5,
+    "jun": 6, "june": 6, "juin": 6, "junio": 6, "juni": 6,
+    "jul": 7, "july": 7, "juillet": 7, "julio": 7, "juli": 7,
+    "aug": 8, "august": 8, "aout": 8, "agosto": 8,
+    "sep": 9, "sept": 9, "september": 9, "septembre": 9,
+    "oct": 10, "october": 10, "octobre": 10, "octubre": 10, "okt": 10,
+    "nov": 11, "november": 11, "novembre": 11, "noviembre": 11,
+    "dec": 12, "december": 12, "decembre": 12, "diciembre": 12, "dez": 12,
 }
 
+VARIANT_ORDER = ("enhanced", "color", "grayscale")
 
-MONTH_ALIASES = {
-    1: {"jan", "january", "janvier", "ene", "enero", "januar"},
-    2: {"feb", "february", "fevrier", "febrero", "februar"},
-    3: {"mar", "march", "mars", "marzo", "maerz"},
-    4: {"apr", "april", "avr", "avril", "abril"},
-    5: {"may", "mai", "mayo"},
-    6: {"jun", "june", "juin", "junio", "juni"},
-    7: {"jul", "july", "juillet", "julio", "juli"},
-    8: {"aug", "august", "aout", "agosto"},
-    9: {"sep", "sept", "september", "septembre", "septiembre"},
-    10: {"oct", "october", "octobre", "octubre", "oktober"},
-    11: {"nov", "november", "novembre", "noviembre"},
-    12: {"dec", "december", "decembre", "diciembre", "dezember"},
+OCR_MONTH_EQUIVALENTS = {
+    "0ct": "oct",
+    "oet": "oct",
+    "n0v": "nov",
+    "noy": "nov",
+    "nar": "mar",
 }
 
+def resolve_month_token(token: str) -> int | None:
+    token = normalize_text(token).replace(" ", "")
+    if not token:
+        return None
+    token = OCR_MONTH_EQUIVALENTS.get(token, token)
+    if token in MONTHS:
+        return MONTHS[token]
 
-# ============================================================
-# NORMALIZATION
-# ============================================================
+    # OCR often emits bilingual month strings such as ME/JUN where one side
+    # is damaged but the other side is reliable.
+    for part in token.split("/"):
+        part = OCR_MONTH_EQUIVALENTS.get(part, part)
+        if part in MONTHS:
+            return MONTHS[part]
 
-def normalize_text(text: str) -> str:
-    text = str(text).lower().strip()
-
-    replacements = {
-        "é": "e",
-        "è": "e",
-        "ê": "e",
-        "ë": "e",
-        "á": "a",
-        "à": "a",
-        "â": "a",
-        "ä": "a",
-        "í": "i",
-        "ì": "i",
-        "î": "i",
-        "ï": "i",
-        "ó": "o",
-        "ò": "o",
-        "ô": "o",
-        "ö": "o",
-        "ú": "u",
-        "ù": "u",
-        "û": "u",
-        "ü": "u",
-        "ñ": "n",
-        "ç": "c",
-    }
-
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-
-    text = re.sub(
-        r"[^a-z0-9/.\-\s]",
-        " ",
-        text,
-    )
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
-    )
-
-    return text.strip()
+    # Conservative fuzzy rescue for short month tokens only.
+    best_month = None
+    best_score = 0.0
+    for alias, month in MONTHS.items():
+        if len(alias) < 3:
+            continue
+        score = SequenceMatcher(None, token, alias).ratio()
+        if score > best_score:
+            best_score = score
+            best_month = month
+    if best_score >= 0.72:
+        return best_month
+    return None
 
 
-NORMALIZED_LABELS = [
-    normalize_text(label)
-    for label in ISSUE_LABELS
-]
 
-MONTH_LOOKUP: dict[str, int] = {}
-
-for month_number, aliases in MONTH_ALIASES.items():
-    for alias in aliases:
-        MONTH_LOOKUP[
-            normalize_text(alias)
-        ] = month_number
+def normalize_text(value: Any) -> str:
+    text = str(value or "").lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9/.\-\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
-# ============================================================
-# LABEL MATCHING
-# ============================================================
+NORMALIZED_ISSUE_LABELS = tuple(normalize_text(x) for x in ISSUE_LABELS)
+NORMALIZED_NEGATIVE_LABELS = tuple(normalize_text(x) for x in NEGATIVE_DATE_LABELS)
 
-def has_strong_issue_signal(
-    text: str,
-) -> bool:
-    normalized = normalize_text(text)
 
-    if len(normalized) < 5:
-        return False
-
-    tokens = set(
-        normalized.split()
-    )
-
-    if "date" in tokens:
-        for keyword in STRONG_LABEL_KEYWORDS:
-            if (
-                keyword in normalized
-            ):
-                return True
-
-    # Cho phép "iss. date" đã mất dấu chấm.
-    if (
-        "iss" in normalized
-        and "date" in normalized
-    ):
+def _as_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"true", "1", "yes"}:
         return True
-
-    return False
-
-
-def label_similarity(
-    text: str,
-) -> float:
-    normalized = normalize_text(text)
-
-    if not normalized:
-        return 0.0
-
-    # Loại ngay label quá ngắn kiểu P, F.
-    if len(normalized) < 5:
-        return 0.0
-
-    best = 0.0
-
-    for label in NORMALIZED_LABELS:
-        if (
-            label in normalized
-            or normalized in label
-        ):
-            similarity = 1.0
-        else:
-            similarity = (
-                SequenceMatcher(
-                    None,
-                    normalized,
-                    label,
-                )
-                .ratio()
-            )
-
-        best = max(
-            best,
-            similarity,
-        )
-
-    if not has_strong_issue_signal(
-        normalized
-    ):
-        best *= 0.45
-
-    return best
+    if text in {"false", "0", "no"}:
+        return False
+    return None
 
 
-# ============================================================
-# DATE HELPERS
-# ============================================================
-
-def safe_iso_date(
-    year: int,
-    month: int,
-    day: int,
-) -> str | None:
+def _safe_iso(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
     try:
-        return date(
-            year,
-            month,
-            day,
-        ).isoformat()
-
+        return date.fromisoformat(text).isoformat()
     except ValueError:
         return None
 
 
-def normalize_two_digit_year(
-    year_2: int,
+def _safe_date(year: int, month: int, day: int) -> str | None:
+    # Reject OCR garbage such as 6206-11-06.
+    current = date.today().year
+    if year < 1900 or year > current + 1:
+        return None
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:
+        return None
+
+
+def _normalize_two_digit_year(
+    yy: int,
     birth_iso: str | None,
     expiry_iso: str | None,
 ) -> int:
-    candidates = [
-        1900 + year_2,
-        2000 + year_2,
-    ]
+    options = [1900 + yy, 2000 + yy]
+    valid: list[int] = []
+    birth = date.fromisoformat(birth_iso) if birth_iso else None
+    expiry = date.fromisoformat(expiry_iso) if expiry_iso else None
 
-    birth = (
-        date.fromisoformat(birth_iso)
-        if birth_iso
-        else None
-    )
-
-    expiry = (
-        date.fromisoformat(expiry_iso)
-        if expiry_iso
-        else None
-    )
-
-    valid = []
-
-    for year in candidates:
+    for year in options:
         if birth and year < birth.year:
             continue
-
         if expiry and year > expiry.year:
             continue
-
+        if year > date.today().year + 1:
+            continue
         valid.append(year)
 
     if valid:
         return max(valid)
 
-    current_year = date.today().year
-
-    return min(
-        candidates,
-        key=lambda value: abs(
-            value - current_year
-        ),
-    )
+    return min(options, key=lambda y: abs(y - date.today().year))
 
 
-def parse_numeric_date(
+def _parse_numeric(
     day: int,
     month: int,
     year_text: str,
     birth_iso: str | None,
     expiry_iso: str | None,
 ) -> str | None:
-    # Chỉ chấp nhận YY hoặc YYYY.
-    if len(year_text) not in {
-        2,
-        4,
-    }:
+    if len(year_text) not in {2, 4}:
         return None
-
     year = int(year_text)
-
     if len(year_text) == 2:
-        year = normalize_two_digit_year(
-            year,
-            birth_iso=birth_iso,
-            expiry_iso=expiry_iso,
-        )
-
-    return safe_iso_date(
-        year,
-        month,
-        day,
-    )
+        year = _normalize_two_digit_year(year, birth_iso, expiry_iso)
+    return _safe_date(year, month, day)
 
 
 def extract_dates_from_text(
     text: str,
-    birth_iso: str | None,
-    expiry_iso: str | None,
+    birth_iso: str | None = None,
+    expiry_iso: str | None = None,
 ) -> list[dict[str, str]]:
-    normalized = normalize_text(
-        text
-    )
+    normalized = normalize_text(text)
+    found: dict[str, dict[str, str]] = {}
 
-    results: list[
-        dict[str, str]
-    ] = []
+    def add(raw: str, iso: str | None, start: int = -1, end: int = -1) -> None:
+        if iso:
+            found[iso] = {
+                "raw": raw,
+                "iso": iso,
+                "start": str(start),
+                "end": str(end),
+            }
 
-    # --------------------------------------------------------
-    # DD/MM/YY or YYYY
-    # DD-MM-YY
-    # DD.MM.YYYY
-    # --------------------------------------------------------
-
-    for match in re.finditer(
-        r"\b"
-        r"(\d{1,2})"
-        r"[./\-]"
-        r"(\d{1,2})"
-        r"[./\-]"
-        r"(\d{2}|\d{4})"
-        r"\b",
+    for m in re.finditer(
+        r"(?<!\d)(\d{1,2})[./\-](\d{1,2})[./\-](\d{2}|\d{4})(?!\d)",
         normalized,
     ):
-        iso = parse_numeric_date(
-            int(match.group(1)),
-            int(match.group(2)),
-            match.group(3),
-            birth_iso,
-            expiry_iso,
+        add(
+            m.group(0),
+            _parse_numeric(int(m.group(1)), int(m.group(2)), m.group(3),
+                           birth_iso, expiry_iso),
+            m.start(), m.end(),
         )
 
-        if iso:
-            results.append(
-                {
-                    "raw": match.group(0),
-                    "iso": iso,
-                }
-            )
-
-    # --------------------------------------------------------
-    # DD MM YY / YYYY
-    # --------------------------------------------------------
-
-    for match in re.finditer(
-        r"\b"
-        r"(\d{1,2})"
-        r"\s+"
-        r"(\d{1,2})"
-        r"\s+"
-        r"(\d{2}|\d{4})"
-        r"\b",
+    for m in re.finditer(
+        r"(?<!\d)(\d{1,2})\s+(\d{1,2})\s+(\d{2}|\d{4})(?!\d)",
         normalized,
     ):
-        iso = parse_numeric_date(
-            int(match.group(1)),
-            int(match.group(2)),
-            match.group(3),
-            birth_iso,
-            expiry_iso,
+        add(
+            m.group(0),
+            _parse_numeric(int(m.group(1)), int(m.group(2)), m.group(3),
+                           birth_iso, expiry_iso),
+            m.start(), m.end(),
         )
 
-        if iso:
-            results.append(
-                {
-                    "raw": match.group(0),
-                    "iso": iso,
-                }
-            )
-
-    # --------------------------------------------------------
-    # Compact DDMMYY / DDMMYYYY
-    # --------------------------------------------------------
-
-    for match in re.finditer(
-        r"(?<!\d)(\d{6}|\d{8})(?!\d)",
-        normalized,
-    ):
-        value = match.group(1)
-
-        if len(value) == 6:
-            day = int(value[0:2])
-            month = int(value[2:4])
-            year_text = value[4:6]
-
-        else:
-            day = int(value[0:2])
-            month = int(value[2:4])
-            year_text = value[4:8]
-
-        iso = parse_numeric_date(
-            day,
-            month,
-            year_text,
-            birth_iso,
-            expiry_iso,
-        )
-
-        if iso:
-            results.append(
-                {
-                    "raw": value,
-                    "iso": iso,
-                }
-            )
-
-    # --------------------------------------------------------
-    # Cho chuỗi bị dính:
-    # 2104201521042017
+    # OCR-glued numeric + textual month forms, e.g.
+    #   127/JUL 2024 -> "12 7/JUL 2024" -> 2024-07-12
     #
-    # Thử mọi đoạn 8 chữ số bên trong.
-    # --------------------------------------------------------
-
-    for long_number in re.findall(
-        r"\d{9,}",
+    # The first two digits are treated as DD when valid. The remaining
+    # 1-2 digits are treated as a duplicated numeric month marker and are
+    # checked against the textual month when possible. This prevents the
+    # generic textual-month regex from incorrectly reading the same token
+    # as day=1.
+    for m in re.finditer(
+        r"(?<!\d)(\d{3,4})\s*/\s*([a-z0-9]{2,10})\s+(\d{2}|\d{4})(?!\d)",
         normalized,
     ):
-        for index in range(
-            0,
-            len(long_number) - 7,
-        ):
-            candidate = (
-                long_number[
-                    index:index + 8
-                ]
-            )
+        prefix = m.group(1)
+        textual_month = resolve_month_token(m.group(2))
 
-            day = int(
-                candidate[0:2]
-            )
+        if textual_month and len(prefix) >= 3:
+            try:
+                day = int(prefix[:2])
+                numeric_month = int(prefix[2:])
+            except ValueError:
+                day = 0
+                numeric_month = -1
 
-            month = int(
-                candidate[2:4]
-            )
-
-            year_text = (
-                candidate[4:8]
-            )
-
-            iso = parse_numeric_date(
-                day,
-                month,
-                year_text,
-                birth_iso,
-                expiry_iso,
-            )
-
-            if iso:
-                results.append(
-                    {
-                        "raw": candidate,
-                        "iso": iso,
-                    }
+            if (
+                1 <= day <= 31
+                and 1 <= numeric_month <= 12
+                and numeric_month == textual_month
+            ):
+                add(
+                    m.group(0),
+                    _parse_numeric(
+                        day,
+                        textual_month,
+                        m.group(3),
+                        birth_iso,
+                        expiry_iso,
+                    ),
+                    m.start(),
+                    m.end(),
                 )
 
-    # --------------------------------------------------------
-    # DDMMMYYYY / DD MMM YYYY / YY
-    # --------------------------------------------------------
-
-    for match in re.finditer(
-        r"\b"
-        r"(\d{1,2})"
-        r"\s*"
-        r"([a-z]{3,10})"
-        r"\s*"
-        r"(\d{2}|\d{4})"
-        r"\b",
+    # OCR-tolerant textual month. Accepts 0CT, NAR and bilingual ME/JUN.
+    for m in re.finditer(
+        r"(?<![a-z0-9])(\d{1,2})\s*([a-z0-9]{2,10}(?:\s*/\s*[a-z0-9]{2,10})?)"
+        r"\s*(\d{2}|\d{4})(?!\d)",
         normalized,
     ):
-        month_token = (
-            match.group(2)
-        )
-
-        month = MONTH_LOOKUP.get(
-            month_token
-        )
-
-        if month is None:
-            continue
-
-        iso = parse_numeric_date(
-            int(match.group(1)),
-            month,
-            match.group(3),
-            birth_iso,
-            expiry_iso,
-        )
-
-        if iso:
-            results.append(
-                {
-                    "raw": match.group(0),
-                    "iso": iso,
-                }
+        month = resolve_month_token(m.group(2))
+        if month:
+            add(
+                m.group(0),
+                _parse_numeric(int(m.group(1)), month, m.group(3),
+                               birth_iso, expiry_iso),
+                m.start(), m.end(),
             )
 
-    # --------------------------------------------------------
-    # Bilingual month:
-    # 29 Apr / Avr 1998
-    # 14 Mar / Mars 2001
-    # --------------------------------------------------------
+    # Compact DDMMYY / DDMMYYYY.
+    for m in re.finditer(r"(?<!\d)(\d{6}|\d{8})(?!\d)", normalized):
+        token = m.group(1)
+        day = int(token[:2])
+        month = int(token[2:4])
+        year_text = token[4:]
+        add(
+            token,
+            _parse_numeric(day, month, year_text, birth_iso, expiry_iso),
+            m.start(), m.end(),
+        )
 
-    for match in re.finditer(
-        r"\b"
-        r"(\d{1,2})"
-        r"\s+"
-        r"([a-z]{3,10})"
-        r"\s*/\s*"
-        r"[a-z]{3,10}"
-        r"\s+"
-        r"(\d{2}|\d{4})"
-        r"\b",
-        normalized,
+    return list(found.values())
+
+def label_similarity(text: str) -> float:
+    normalized = normalize_text(text)
+    if len(normalized) < 4:
+        return 0.0
+    best = 0.0
+    for label in NORMALIZED_ISSUE_LABELS:
+        if label in normalized or normalized in label:
+            best = max(best, 1.0)
+        else:
+            best = max(best, SequenceMatcher(None, normalized, label).ratio())
+    return best
+
+
+def has_issue_signal(text: str) -> bool:
+    normalized = normalize_text(text)
+    compact = normalized.replace(" ", "")
+    for label in NORMALIZED_ISSUE_LABELS:
+        if label in normalized or label.replace(" ", "") in compact:
+            return True
+
+    if (
+        "date" in normalized
+        and any(k in normalized for k in ("issue", "issu", "iss "))
     ):
-        month = MONTH_LOOKUP.get(
-            match.group(2)
-        )
+        return True
 
-        if month is None:
-            continue
+    # OCR typo rescue: DATE OF ISHUE, DUSE OF ISSUE, etc.
+    best = max(
+        (
+            SequenceMatcher(None, normalized, label).ratio()
+            for label in NORMALIZED_ISSUE_LABELS
+        ),
+        default=0.0,
+    )
+    return best >= 0.70
 
-        iso = parse_numeric_date(
-            int(match.group(1)),
-            month,
-            match.group(3),
-            birth_iso,
-            expiry_iso,
-        )
-
-        if iso:
-            results.append(
-                {
-                    "raw": match.group(0),
-                    "iso": iso,
-                }
-            )
-
-    # Dedupe
-    unique = {}
-
-    for result in results:
-        unique[
-            result["iso"]
-        ] = result
-
-    return list(
-        unique.values()
+def has_negative_signal(text: str) -> bool:
+    normalized = normalize_text(text)
+    compact = normalized.replace(" ", "")
+    return any(
+        p in normalized or p.replace(" ", "") in compact
+        for p in NORMALIZED_NEGATIVE_LABELS
     )
 
 
-# ============================================================
-# OCR GROUPS
-# ============================================================
+def _box(item: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    value = item.get("box")
+    if not isinstance(value, list) or len(value) != 4:
+        return None
+    try:
+        x1, y1, x2, y2 = map(float, value)
+        return x1, y1, x2, y2
+    except (TypeError, ValueError):
+        return None
 
-def build_text_groups(
-    items: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    groups = []
 
-    # Single box.
-    for item in items:
-        groups.append(
-            {
-                "text": item.get(
-                    "text",
-                    "",
-                ),
-                "items": [item],
-            }
+def _spatial_score(
+    label_item: dict[str, Any],
+    date_item: dict[str, Any],
+) -> float | None:
+    lb = _box(label_item)
+    db = _box(date_item)
+    if lb is None or db is None:
+        return None
+
+    lx1, ly1, lx2, ly2 = lb
+    dx1, dy1, dx2, dy2 = db
+    lh = max(1.0, ly2 - ly1)
+    lw = max(1.0, lx2 - lx1)
+    dh = max(1.0, dy2 - dy1)
+
+    # Same row, value to the right.
+    vertical_delta = abs(((dy1 + dy2) / 2) - ((ly1 + ly2) / 2))
+    horizontal_gap = dx1 - lx2
+    if (
+        -0.5 * lh <= horizontal_gap <= 5.0 * lh
+        and vertical_delta <= 1.25 * max(lh, dh)
+    ):
+        return 34.0 - max(0.0, horizontal_gap) / max(lh, 1.0) * 3.0
+
+    # Value immediately below the label in roughly the same column.
+    gap = dy1 - ly2
+    overlap = max(0.0, min(lx2, dx2) - max(lx1, dx1))
+    overlap_ratio = overlap / max(1.0, min(lw, dx2 - dx1))
+    center_delta = abs(((dx1 + dx2) / 2) - ((lx1 + lx2) / 2))
+    if (
+        -0.35 * lh <= gap <= 4.5 * lh
+        and (overlap_ratio >= 0.10 or center_delta <= max(lw, 180.0))
+    ):
+        return (
+            31.0
+            - max(0.0, gap) / lh * 4.0
+            + min(10.0, overlap_ratio * 10.0)
         )
 
-    # Ghép 2 hoặc 3 box liên tiếp.
-    for size in (2, 3):
-        for index in range(
-            len(items) - size + 1
-        ):
-            chunk = items[
-                index:index + size
-            ]
-
-            groups.append(
-                {
-                    "text": " ".join(
-                        str(
-                            item.get(
-                                "text",
-                                "",
-                            )
-                        )
-                        for item in chunk
-                    ),
-                    "items": chunk,
-                }
-            )
-
-    return groups
+    return None
 
 
-# ============================================================
-# TEMPORAL RULES
-# ============================================================
-
-def hard_temporal_filter(
+def _temporal_allowed(
     candidate_iso: str,
     birth_iso: str | None,
     expiry_iso: str | None,
 ) -> bool:
-    """
-    True = candidate được phép.
-
-    Khi có MRZ:
-        DOB < DOI < EXP
-    """
-    candidate = date.fromisoformat(
-        candidate_iso
-    )
-
-    if birth_iso:
-        birth = date.fromisoformat(
-            birth_iso
-        )
-
-        if candidate <= birth:
-            return False
-
-    if expiry_iso:
-        expiry = date.fromisoformat(
-            expiry_iso
-        )
-
-        if candidate >= expiry:
-            return False
-
+    candidate = date.fromisoformat(candidate_iso)
+    if candidate > date.today() + timedelta(days=366):
+        return False
+    if birth_iso and candidate <= date.fromisoformat(birth_iso):
+        return False
+    if expiry_iso and candidate >= date.fromisoformat(expiry_iso):
+        return False
     return True
 
 
-def temporal_score(
+def _validity_bonus(
     candidate_iso: str,
-    birth_iso: str | None,
     expiry_iso: str | None,
 ) -> float:
-    if not hard_temporal_filter(
-        candidate_iso,
-        birth_iso,
-        expiry_iso,
+    if not expiry_iso:
+        return 0.0
+    candidate = date.fromisoformat(candidate_iso)
+    expiry = date.fromisoformat(expiry_iso)
+    years = (expiry - candidate).days / 365.2425
+
+    bonus = 0.0
+    # Passport validity is commonly around 5 or 10 years; do not make this
+    # a hard rule because some countries/ages use other periods.
+    for target in (5.0, 10.0):
+        distance = abs(years - target)
+        if distance <= 0.03:       # ~11 days
+            bonus = max(bonus, 28.0)
+        elif distance <= 0.15:     # ~55 days
+            bonus = max(bonus, 20.0)
+        elif distance <= 0.50:
+            bonus = max(bonus, 8.0)
+
+    # Conservative tie-breaker only when the candidate is already close to
+    # a typical 5/10-year validity interval. Exact day/month alignment with
+    # the checksum-backed expiry is strong supporting evidence.
+    if (
+        candidate.day == expiry.day
+        and candidate.month == expiry.month
+        and any(abs(years - target) <= 0.15 for target in (5.0, 10.0))
     ):
-        return -1000.0
+        bonus += 10.0
 
-    score = 0.0
-
-    if birth_iso:
-        score += 10.0
-
-    if expiry_iso:
-        score += 20.0
-
-        candidate = date.fromisoformat(
-            candidate_iso
-        )
-
-        expiry = date.fromisoformat(
-            expiry_iso
-        )
-
-        years = (
-            (expiry - candidate).days
-            / 365.25
-        )
-
-        if 0.5 <= years <= 11.5:
-            score += 15.0
-
-        if abs(years - 5) <= 1:
-            score += 10.0
-
-        if abs(years - 10) <= 1:
-            score += 10.0
-
-    return score
+    return bonus
 
 
-# ============================================================
-# LOAD MRZ
-# ============================================================
+def _candidate_is_known_non_issue(
+    iso: str,
+    birth_iso: str | None,
+    expiry_iso: str | None,
+) -> bool:
+    return iso == birth_iso or iso == expiry_iso
 
-def load_mrz_rows(
-) -> dict[str, dict[str, str]]:
-    if not MRZ_CSV.exists():
+
+def _read_csv_map(path: Path) -> dict[str, dict[str, str]]:
+    if not path.exists():
         return {}
-
-    with MRZ_CSV.open(
-        "r",
-        newline="",
-        encoding="utf-8-sig",
-    ) as file:
-        rows = list(
-            csv.DictReader(file)
-        )
-
+    with path.open("r", newline="", encoding="utf-8-sig") as f:
+        rows = list(csv.DictReader(f))
     return {
-        row["filename"]: row
-        for row in rows
-        if row.get("filename")
+        str(r.get("filename") or ""): r
+        for r in rows
+        if r.get("filename")
     }
 
 
-# ============================================================
-# EXTRACT ONE
-# ============================================================
+def _filename_keys(filename: str | None) -> list[str]:
+    text = str(filename or "")
+    if not text:
+        return []
+    stem = Path(text).stem
+    keys = [text, stem, f"{stem}.jpg", f"{stem}.png"]
+    return list(dict.fromkeys(keys))
 
-def extract_one_v3(
+
+def _lookup(
+    mapping: dict[str, dict[str, str]],
+    filename: str | None,
+) -> dict[str, str]:
+    for key in _filename_keys(filename):
+        if key in mapping:
+            return mapping[key]
+    return {}
+
+
+def choose_temporal_context(
+    filename: str | None,
+    mrz_parsed: dict[str, dict[str, str]],
+    mrz_validated: dict[str, dict[str, str]],
+    viz_fields: dict[str, dict[str, str]],
+) -> tuple[str | None, str | None, str]:
+    parsed = _lookup(mrz_parsed, filename)
+    validated = _lookup(mrz_validated, filename)
+    viz = _lookup(viz_fields, filename)
+
+    mrz_birth = _safe_iso(parsed.get("birth_date"))
+    mrz_expiry = _safe_iso(parsed.get("expiry_date"))
+    viz_birth = _safe_iso(viz.get("date_of_birth"))
+    viz_expiry = _safe_iso(viz.get("date_of_expiry"))
+
+    all_checks = _as_bool(validated.get("all_main_checks_valid"))
+    strict = str(parsed.get("parse_mode") or "") == "strict_44_44"
+
+    if all_checks is True and strict:
+        birth = mrz_birth or viz_birth
+        expiry = mrz_expiry or viz_expiry
+        if birth and expiry and date.fromisoformat(birth) >= date.fromisoformat(expiry):
+            birth = None
+        return birth, expiry, "validated_mrz"
+
+    birth = viz_birth or mrz_birth
+    expiry = viz_expiry or mrz_expiry
+    source_parts = []
+    if birth:
+        source_parts.append("birth_viz" if viz_birth else "birth_mrz")
+    if expiry:
+        source_parts.append("expiry_viz" if viz_expiry else "expiry_mrz")
+
+    # Never let an internally impossible context reject otherwise plausible DOI.
+    if birth and expiry and date.fromisoformat(birth) >= date.fromisoformat(expiry):
+        birth = None
+        source_parts.append("birth_discarded_invalid")
+
+    return birth, expiry, "+".join(source_parts) or "none"
+
+def _variant_records(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    variants = record.get("variants") or {}
+    result: list[tuple[str, dict[str, Any]]] = []
+
+    if isinstance(variants, dict):
+        for name in VARIANT_ORDER:
+            value = variants.get(name)
+            if isinstance(value, dict):
+                result.append((name, value))
+        for name, value in variants.items():
+            if name not in VARIANT_ORDER and isinstance(value, dict):
+                result.append((str(name), value))
+
+    if not result and isinstance(record.get("selected_result"), dict):
+        result.append((
+            str(record.get("selected_variant") or "selected"),
+            record["selected_result"],
+        ))
+
+    return result
+
+
+
+def _union_box(items: list[dict[str, Any]]) -> list[float] | None:
+    boxes = [_box(item) for item in items]
+    boxes = [b for b in boxes if b is not None]
+    if not boxes:
+        return None
+    return [
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    ]
+
+
+def _date_item_windows(
+    items: list[dict[str, Any]],
+    birth_iso: str | None,
+    expiry_iso: str | None,
+) -> list[tuple[int, dict[str, Any], dict[str, str]]]:
+    out = []
+    seen = set()
+    for start in range(len(items)):
+        for size in (1, 2, 3):
+            chunk = items[start:start + size]
+            if len(chunk) != size or not all(isinstance(x, dict) for x in chunk):
+                continue
+            text = " ".join(str(x.get("text") or "") for x in chunk).strip()
+            if not text:
+                continue
+            synthetic = {
+                "text": text,
+                "box": _union_box(chunk),
+                "confidence": min(
+                    [float(x.get("confidence") or 0.0) for x in chunk] or [0.0]
+                ),
+            }
+            for parsed in extract_dates_from_text(text, birth_iso, expiry_iso):
+                key = (parsed["iso"], start, size)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((start, synthetic, parsed))
+    return out
+
+
+def _all_parsed_dates(
     record: dict[str, Any],
-    mrz_map: dict[str, dict[str, str]],
-) -> dict[str, Any]:
-    filename = record.get(
-        "filename"
-    )
+    birth_iso: str | None,
+    expiry_iso: str | None,
+) -> list[dict[str, Any]]:
+    values = []
+    for variant_name, variant in _variant_records(record):
+        items = variant.get("items") or []
+        if not isinstance(items, list):
+            continue
+        for idx, item, parsed in _date_item_windows(items, birth_iso, expiry_iso):
+            values.append({
+                "iso": parsed["iso"],
+                "raw": parsed["raw"],
+                "variant": variant_name,
+                "item_index": idx,
+                "candidate_text": item.get("text"),
+            })
+    return values
 
-    selected_result = record.get(
-        "selected_result",
-        {},
-    )
 
-    items = selected_result.get(
-        "items",
-        [],
-    )
+def structural_role_candidates(
+    record: dict[str, Any],
+    birth_iso: str | None,
+    expiry_iso: str | None,
+    context_source: str,
+) -> list[dict[str, Any]]:
+    parsed = _all_parsed_dates(record, birth_iso, expiry_iso)
+    unique = {}
+    for item in parsed:
+        iso = item["iso"]
+        if iso == birth_iso or iso == expiry_iso:
+            continue
+        if not _temporal_allowed(iso, birth_iso, expiry_iso):
+            continue
+        unique.setdefault(iso, item)
 
-    mrz = mrz_map.get(
-        filename,
-        {},
-    )
+    if not unique:
+        return []
 
-    birth_iso = (
-        mrz.get("birth_date")
-        or None
-    )
+    # If checksum-valid MRZ gives DOB/expiry and OCR contains exactly one other
+    # date between them, that remaining role is strongly indicative of DOI.
+    if context_source == "validated_mrz" and len(unique) == 1:
+        item = next(iter(unique.values()))
+        return [{
+            "iso": item["iso"],
+            "raw": item["raw"],
+            "score": 86.0,
+            "method": "date_role_elimination",
+            "label_text": None,
+            "candidate_text": item.get("candidate_text"),
+            "variant": item.get("variant"),
+        }]
 
-    expiry_iso = (
-        mrz.get("expiry_date")
-        or None
-    )
+    return []
 
-    if not items:
-        return {
-            "filename": filename,
-            "status": "no_ocr_items",
-            "date_of_issue": None,
-            "method": None,
-            "score": None,
-            "birth_date_mrz": birth_iso,
-            "expiry_date_mrz": expiry_iso,
-        }
 
-    groups = build_text_groups(
-        items
-    )
+def collect_candidates(
+    record: dict[str, Any],
+    birth_iso: str | None,
+    expiry_iso: str | None,
+) -> tuple[list[dict[str, Any]], bool]:
+    candidates: list[dict[str, Any]] = []
+    any_issue_label = False
 
-    date_candidates = []
+    for variant_name, variant in _variant_records(record):
+        items = variant.get("items") or []
+        if not isinstance(items, list):
+            continue
 
-    for group in groups:
-        dates = extract_dates_from_text(
-            group["text"],
-            birth_iso=birth_iso,
-            expiry_iso=expiry_iso,
+        labels: list[tuple[int, dict[str, Any], float]] = []
+        date_items: list[tuple[int, dict[str, Any], dict[str, str]]] = []
+
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "")
+            if has_negative_signal(text):
+                pass
+            elif has_issue_signal(text):
+                similarity = label_similarity(text)
+                labels.append((idx, item, similarity))
+                any_issue_label = True
+
+        date_items = _date_item_windows(
+            items,
+            birth_iso,
+            expiry_iso,
         )
 
-        for date_candidate in dates:
-            date_candidates.append(
-                {
-                    "date": date_candidate,
-                    "group": group,
-                }
+        for date_idx, date_item, parsed in date_items:
+            iso = parsed["iso"]
+            if not _temporal_allowed(iso, birth_iso, expiry_iso):
+                continue
+            if _candidate_is_known_non_issue(iso, birth_iso, expiry_iso):
+                continue
+
+            best_score = -1e9
+            best_label_text = None
+            best_method = None
+
+            for label_idx, label_item, similarity in labels:
+                label_text = str(label_item.get("text") or "")
+
+                # If OCR merged a previous date and the "Date of issue" label
+                # into one item, a date occurring before the label is usually
+                # DOB/another field, not DOI.
+                if label_idx == date_idx:
+                    normalized = normalize_text(label_text)
+                    issue_positions = [
+                        normalized.find(lbl)
+                        for lbl in NORMALIZED_ISSUE_LABELS
+                        if lbl in normalized
+                    ]
+                    issue_pos = min(issue_positions) if issue_positions else -1
+                    try:
+                        date_pos = int(parsed.get("start", "-1"))
+                    except ValueError:
+                        date_pos = -1
+                    if (
+                        issue_pos >= 0
+                        and date_pos >= 0
+                        and date_pos + len(parsed["raw"]) <= issue_pos
+                    ):
+                        continue
+
+                spatial = _spatial_score(label_item, date_item)
+                index_distance = abs(label_idx - date_idx)
+                score = similarity * 45.0
+                method = "issue_label_nearby"
+
+                if spatial is not None:
+                    score += spatial
+                    method = "issue_label_spatial"
+                else:
+                    # Order-only fallback is deliberately conservative.
+                    if index_distance > 3:
+                        continue
+                    score += max(0.0, 18.0 - index_distance * 5.0)
+
+                score += _validity_bonus(iso, expiry_iso)
+
+                try:
+                    score += float(date_item.get("confidence") or 0.0) * 5.0
+                except (TypeError, ValueError):
+                    pass
+
+                if score > best_score:
+                    best_score = score
+                    best_label_text = label_text
+                    best_method = method
+
+            # If no issue label is available, temporal-only rescue is allowed
+            # only when expiry relationship is exceptionally strong.
+            if best_method is None:
+                validity = _validity_bonus(iso, expiry_iso)
+                if validity < 28.0:
+                    continue
+                best_score = 42.0 + validity
+                best_method = "temporal_validity_rescue"
+
+            candidates.append({
+                "iso": iso,
+                "raw": parsed["raw"],
+                "score": float(best_score),
+                "method": best_method,
+                "label_text": best_label_text,
+                "candidate_text": str(date_item.get("text") or ""),
+                "variant": variant_name,
+            })
+
+    return candidates, any_issue_label
+
+
+def _replace_year_safe(value: date, year: int) -> date | None:
+    try:
+        return value.replace(year=year)
+    except ValueError:
+        # Feb 29 -> Feb 28.
+        if value.month == 2 and value.day == 29:
+            return value.replace(year=year, day=28)
+        return None
+
+
+def expiry_backoff_candidates(
+    record: dict[str, Any],
+    birth_iso: str | None,
+    expiry_iso: str | None,
+    any_issue_label: bool,
+) -> list[dict[str, Any]]:
+    if not expiry_iso:
+        return []
+
+    expiry = date.fromisoformat(expiry_iso)
+    all_text = " ".join(
+        str(item.get("text") or "")
+        for _, variant in _variant_records(record)
+        for item in (variant.get("items") or [])
+        if isinstance(item, dict)
+    )
+    normalized_all = normalize_text(all_text)
+    parsed = _all_parsed_dates(record, birth_iso, expiry_iso)
+
+    derived: list[dict[str, Any]] = []
+
+    for years in (5, 10):
+        base = _replace_year_safe(expiry, expiry.year - years)
+        if base is None:
+            continue
+
+        for candidate in (base, base + timedelta(days=1)):
+            iso = candidate.isoformat()
+            if not _temporal_allowed(iso, birth_iso, expiry_iso):
+                continue
+
+            year4 = str(candidate.year)
+            year2 = year4[-2:]
+
+            year_support = (
+                year4 in normalized_all
+                or re.search(rf"(?<!\d){re.escape(year2)}(?!\d)", normalized_all)
+                is not None
             )
 
-    # --------------------------------------------------------
-    # Hard MRZ filter
-    # --------------------------------------------------------
+            # Strong day/month support can come from a misread year (e.g.
+            # 22 12 2010 vs expected 22 12 2019).
+            day_month_support = False
+            exact_day_support = False
+            one_digit_year_error = False
+            for item in parsed:
+                if item["iso"] in {birth_iso, expiry_iso}:
+                    continue
+                d = date.fromisoformat(item["iso"])
+                if d.month == candidate.month and abs(d.day - candidate.day) <= 1:
+                    day_month_support = True
+                if d.month == candidate.month and d.day == candidate.day:
+                    exact_day_support = True
+                    if len(str(d.year)) == 4:
+                        diffs = sum(a != b for a, b in zip(str(d.year), year4))
+                        if diffs == 1:
+                            one_digit_year_error = True
 
-    filtered_candidates = []
+            # Even if the month token itself is corrupted (e.g. NEOUN), a
+            # matching day+year around an alphabetic token is useful evidence.
+            day_year_support = (
+                re.search(
+                    rf"(?<!\d){candidate.day:02d}\s+[a-z0-9/]+\s+{year4}(?!\d)",
+                    normalized_all,
+                )
+                is not None
+                or re.search(
+                    rf"(?<!\d){candidate.day}\s+[a-z0-9/]+\s+{year2}(?!\d)",
+                    normalized_all,
+                )
+                is not None
+            )
 
-    for candidate in date_candidates:
-        iso = candidate[
-            "date"
-        ]["iso"]
+            # Month-only evidence near a recognized issue label is enough for
+            # a conservative 10-year rescue when OCR lost day/year entirely.
+            month_names = [
+                alias for alias, month in MONTHS.items()
+                if month == candidate.month and len(alias) == 3
+            ]
+            month_support = any(
+                re.search(rf"\b{re.escape(alias)}\b", normalized_all)
+                for alias in month_names
+            )
 
-        if (
-            birth_iso
-            or expiry_iso
-        ):
-            if not hard_temporal_filter(
-                iso,
-                birth_iso,
-                expiry_iso,
+            if not (
+                year_support
+                or day_year_support
+                or one_digit_year_error
+                or (any_issue_label and (day_month_support or month_support))
             ):
                 continue
 
-        filtered_candidates.append(
-            candidate
+            score = 72.0
+            if year_support:
+                score += 10.0
+            if day_year_support:
+                score += 12.0
+            if one_digit_year_error:
+                score += 14.0
+            if day_month_support:
+                score += 5.0
+            if exact_day_support:
+                score += 7.0
+            if any_issue_label:
+                score += 5.0
+            # When OCR has lost the day/year entirely, 10-year validity is
+            # a modest tie-breaker, not a hard rule.
+            if years == 10 and not year_support and not exact_day_support:
+                score += 3.0
+
+            derived.append({
+                "iso": iso,
+                "raw": None,
+                "score": score,
+                "method": f"expiry_backoff_{years}y_v6",
+                "label_text": "date of issue / temporal rescue",
+                "candidate_text": None,
+                "variant": None,
+            })
+
+    return derived
+
+def rank_candidates(
+    candidates: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    best_by_iso: dict[str, dict[str, Any]] = {}
+    support_by_iso: dict[str, set[str]] = {}
+
+    items = list(candidates)
+    for c in items:
+        variant = c.get("variant")
+        if variant:
+            support_by_iso.setdefault(c["iso"], set()).add(str(variant))
+
+    for c in items:
+        candidate = dict(c)
+        support = support_by_iso.get(candidate["iso"], set())
+        candidate["variant_agreement_count"] = len(support)
+        candidate["supporting_variants"] = sorted(support)
+        candidate["score"] = float(candidate["score"]) + 7.0 * max(
+            0, len(support) - 1
         )
+        current = best_by_iso.get(candidate["iso"])
+        if current is None or candidate["score"] > current["score"]:
+            best_by_iso[candidate["iso"]] = candidate
 
-    # --------------------------------------------------------
-    # Strong DOI labels only
-    # --------------------------------------------------------
-
-    label_candidates = []
-
-    for item in items:
-        text = item.get(
-            "text",
-            "",
-        )
-
-        similarity = (
-            label_similarity(text)
-        )
-
-        if (
-            similarity >= 0.60
-            and has_strong_issue_signal(
-                text
-            )
-        ):
-            label_candidates.append(
-                (
-                    similarity,
-                    item,
-                )
-            )
-
-    scored = []
-
-    # --------------------------------------------------------
-    # LEVEL 1: STRONG LABEL
-    # --------------------------------------------------------
-
-    for similarity, label_item in label_candidates:
-        label_index = items.index(
-            label_item
-        )
-
-        for candidate in filtered_candidates:
-            group_items = candidate[
-                "group"
-            ]["items"]
-
-            indices = [
-                items.index(item)
-                for item in group_items
-                if item in items
-            ]
-
-            if not indices:
-                continue
-
-            distance = min(
-                abs(
-                    index
-                    - label_index
-                )
-                for index in indices
-            )
-
-            # Ưu tiên các OCR boxes gần label.
-            position_score = max(
-                0.0,
-                40.0
-                - distance * 8.0,
-            )
-
-            iso = candidate[
-                "date"
-            ]["iso"]
-
-            score = (
-                similarity * 40.0
-                + position_score
-                + temporal_score(
-                    iso,
-                    birth_iso,
-                    expiry_iso,
-                )
-            )
-
-            scored.append(
-                {
-                    "iso": iso,
-                    "raw": candidate[
-                        "date"
-                    ]["raw"],
-                    "score": score,
-                    "method": "strong_label_mrz",
-                    "label_text": (
-                        label_item.get(
-                            "text"
-                        )
-                    ),
-                    "candidate_text": (
-                        candidate[
-                            "group"
-                        ]["text"]
-                    ),
-                }
-            )
-
-    # --------------------------------------------------------
-    # LEVEL 2: MRZ ASSISTED
-    # --------------------------------------------------------
-
-    if (
-        not scored
-        and (
-            birth_iso
-            or expiry_iso
-        )
-    ):
-        for candidate in filtered_candidates:
-            iso = candidate[
-                "date"
-            ]["iso"]
-
-            score = (
-                30.0
-                + temporal_score(
-                    iso,
-                    birth_iso,
-                    expiry_iso,
-                )
-            )
-
-            scored.append(
-                {
-                    "iso": iso,
-                    "raw": candidate[
-                        "date"
-                    ]["raw"],
-                    "score": score,
-                    "method": "mrz_assisted",
-                    "label_text": None,
-                    "candidate_text": (
-                        candidate[
-                            "group"
-                        ]["text"]
-                    ),
-                }
-            )
-
-    # --------------------------------------------------------
-    # LEVEL 3:
-    # Không có MRZ thì chỉ cho phép strong label.
-    # Không generic guessing.
-    # --------------------------------------------------------
-
-    if not scored:
-        return {
-            "filename": filename,
-            "status": "no_date_found",
-            "date_of_issue": None,
-            "method": None,
-            "score": None,
-            "birth_date_mrz": birth_iso,
-            "expiry_date_mrz": expiry_iso,
-            "all_candidate_dates": list(
-                dict.fromkeys(
-                    candidate[
-                        "date"
-                    ]["iso"]
-                    for candidate
-                    in date_candidates
-                )
-            ),
-        }
-
-    # --------------------------------------------------------
-    # DEDUPE
-    # --------------------------------------------------------
-
-    best_by_iso = {}
-
-    for candidate in scored:
-        iso = candidate["iso"]
-
-        if (
-            iso not in best_by_iso
-            or candidate["score"]
-            > best_by_iso[iso]["score"]
-        ):
-            best_by_iso[
-                iso
-            ] = candidate
-
-    ranked = sorted(
+    return sorted(
         best_by_iso.values(),
-        key=lambda value: value[
-            "score"
-        ],
+        key=lambda x: float(x["score"]),
         reverse=True,
     )
 
-    best = ranked[0]
 
-    second_score = (
-        ranked[1]["score"]
-        if len(ranked) > 1
-        else None
+def extract_one(
+    record: dict[str, Any],
+    mrz_parsed: dict[str, dict[str, str]],
+    mrz_validated: dict[str, dict[str, str]],
+    viz_fields: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    filename = str(record.get("filename") or "")
+    birth_iso, expiry_iso, context_source = choose_temporal_context(
+        filename,
+        mrz_parsed,
+        mrz_validated,
+        viz_fields,
     )
 
-    margin = (
-        best["score"]
-        - second_score
-        if second_score is not None
-        else None
+    candidates, any_issue_label = collect_candidates(
+        record,
+        birth_iso,
+        expiry_iso,
     )
 
-    if (
-        best["method"]
-        == "strong_label_mrz"
-        and best["score"] >= 75
-        and (
-            margin is None
-            or margin >= 5
+    candidates.extend(
+        structural_role_candidates(
+            record,
+            birth_iso,
+            expiry_iso,
+            context_source,
         )
-    ):
+    )
+
+    candidates.extend(
+        expiry_backoff_candidates(
+            record,
+            birth_iso,
+            expiry_iso,
+            any_issue_label,
+        )
+    )
+
+    ranked = rank_candidates(candidates)
+
+    if not ranked:
+        has_items = any(
+            bool((variant.get("items") or []))
+            for _, variant in _variant_records(record)
+        )
+        return {
+            "filename": filename,
+            "status": "no_date_found" if has_items else "no_ocr_items",
+            "date_of_issue": None,
+            "method": None,
+            "score": None,
+            "score_margin": None,
+            "birth_date_mrz": _safe_iso(
+                _lookup(mrz_parsed, filename).get("birth_date")
+            ),
+            "expiry_date_mrz": _safe_iso(
+                _lookup(mrz_parsed, filename).get("expiry_date")
+            ),
+            "birth_date_context": birth_iso,
+            "expiry_date_context": expiry_iso,
+            "temporal_context_source": context_source,
+            "extractor_version": EXTRACTOR_VERSION,
+            "all_candidate_dates": [],
+        }
+
+    best = ranked[0]
+    second = ranked[1]["score"] if len(ranked) > 1 else None
+    margin = best["score"] - second if second is not None else None
+
+    score = float(best["score"])
+    if score >= 88.0 and (margin is None or margin >= 4.0):
         status = "high_confidence"
-
-    elif best["score"] >= 55:
+    elif score >= 65.0:
         status = "medium_confidence"
-
     else:
         status = "low_confidence"
 
     return {
         "filename": filename,
         "status": status,
-        "date_of_issue": best[
-            "iso"
-        ],
-        "raw_date": best[
-            "raw"
-        ],
-        "method": best[
-            "method"
-        ],
-        "score": round(
-            float(best["score"]),
-            3,
+        "date_of_issue": best["iso"],
+        "raw_date": best.get("raw"),
+        "method": best.get("method"),
+        "score": round(score, 3),
+        "score_margin": round(float(margin), 3) if margin is not None else None,
+        "birth_date_mrz": _safe_iso(
+            _lookup(mrz_parsed, filename).get("birth_date")
         ),
-        "score_margin": (
-            round(
-                float(margin),
-                3,
-            )
-            if margin is not None
-            else None
+        "expiry_date_mrz": _safe_iso(
+            _lookup(mrz_parsed, filename).get("expiry_date")
         ),
-        "birth_date_mrz": birth_iso,
-        "expiry_date_mrz": expiry_iso,
-        "label_text": best[
-            "label_text"
-        ],
-        "candidate_text": best[
-            "candidate_text"
-        ],
-        "all_candidate_dates": [
-            item["iso"]
-            for item in ranked
-        ],
+        "birth_date_context": birth_iso,
+        "expiry_date_context": expiry_iso,
+        "temporal_context_source": context_source,
+        "label_text": best.get("label_text"),
+        "candidate_text": best.get("candidate_text"),
+        "all_candidate_dates": [x["iso"] for x in ranked],
+        "spatial_variant": best.get("variant"),
+        "spatial_variant_agreement_count": best.get("variant_agreement_count"),
+        "spatial_supporting_variants": best.get("supporting_variants"),
+        "extractor_version": EXTRACTOR_VERSION,
     }
 
 
-# ============================================================
-# SPATIAL DOI RESCUE
-# ============================================================
+def load_viz_records() -> list[dict[str, Any]]:
+    if VIZ_JSON.exists():
+        with VIZ_JSON.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
 
-NEGATIVE_DATE_LABEL_PATTERNS = (
-    "date of birth",
-    "birth date",
-    "date de naissance",
-    "fecha de nacimiento",
-    "data de nascimento",
-    "data di nascita",
-    "geboortedatum",
-    "geburtsdatum",
-    "dateofbirth",
-    "dateof birth",
-    "date ofbirth",
-    "date of expiry",
-    "expiry date",
-    "expiration date",
-    "date d expiration",
-    "date dexpiration",
-    "date expiration",
-    "fecha de expiracion",
-    "data de validade",
-    "data di scadenza",
-    "valid until",
-    "valid thru",
-    "valid through",
-    "valid to",
-    "gultig bis",
-    "gueltig bis",
-    "geldig tot",
-    "dateofexpiry",
-    "dateof expiry",
-    "date ofexpiry",
-)
+    # Compatibility with append-only checkpoint builds.
+    if VIZ_JSONL.exists():
+        records = []
+        with VIZ_JSONL.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    # A partially written final line is safe to ignore.
+                    continue
+                if isinstance(value, dict):
+                    records.append(value)
+        if records:
+            return records
 
-SPATIAL_VARIANT_ORDER = (
-    "enhanced",
-    "color",
-    "grayscale",
-)
-
-
-def is_negative_date_label(
-    text: str,
-) -> bool:
-    normalized = normalize_text(text)
-    compact = normalized.replace(" ", "")
-
-    for pattern in NEGATIVE_DATE_LABEL_PATTERNS:
-        normalized_pattern = normalize_text(pattern)
-
-        if normalized_pattern in normalized:
-            return True
-
-        if normalized_pattern.replace(" ", "") in compact:
-            return True
-
-    return False
-
-
-def spatial_box(
-    item: dict[str, Any],
-) -> tuple[float, float, float, float] | None:
-    box = item.get("box")
-
-    if not isinstance(box, list) or len(box) != 4:
-        return None
-
-    try:
-        x1, y1, x2, y2 = (
-            float(value)
-            for value in box
-        )
-    except (TypeError, ValueError):
-        return None
-
-    return x1, y1, x2, y2
-
-
-def spatial_center_x(
-    item: dict[str, Any],
-) -> float | None:
-    box = spatial_box(item)
-
-    if box is None:
-        return None
-
-    x1, _, x2, _ = box
-    return (x1 + x2) / 2.0
-
-
-def spatial_height(
-    item: dict[str, Any],
-) -> float | None:
-    box = spatial_box(item)
-
-    if box is None:
-        return None
-
-    _, y1, _, y2 = box
-    return max(1.0, y2 - y1)
-
-
-def spatial_width(
-    item: dict[str, Any],
-) -> float | None:
-    box = spatial_box(item)
-
-    if box is None:
-        return None
-
-    x1, _, x2, _ = box
-    return max(1.0, x2 - x1)
-
-
-def spatial_vertical_gap(
-    anchor: dict[str, Any],
-    candidate: dict[str, Any],
-) -> float | None:
-    anchor_box = spatial_box(anchor)
-    candidate_box = spatial_box(candidate)
-
-    if anchor_box is None or candidate_box is None:
-        return None
-
-    _, _, _, anchor_y2 = anchor_box
-    _, candidate_y1, _, _ = candidate_box
-
-    return candidate_y1 - anchor_y2
-
-
-def spatial_horizontal_overlap(
-    first: dict[str, Any],
-    second: dict[str, Any],
-) -> float:
-    first_box = spatial_box(first)
-    second_box = spatial_box(second)
-
-    if first_box is None or second_box is None:
-        return 0.0
-
-    first_x1, _, first_x2, _ = first_box
-    second_x1, _, second_x2, _ = second_box
-
-    intersection = max(
-        0.0,
-        min(first_x2, second_x2)
-        - max(first_x1, second_x1),
+    raise FileNotFoundError(
+        f"Không thấy VIZ OCR records:\n{VIZ_JSON}\nhoặc\n{VIZ_JSONL}"
     )
 
-    denominator = min(
-        max(1.0, first_x2 - first_x1),
-        max(1.0, second_x2 - second_x1),
-    )
 
-    return intersection / denominator
+def _csv_value(value: Any) -> Any:
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return value
 
 
-def build_spatial_doi_candidates(
-    variant_name: str,
-    result: dict[str, Any],
-) -> list[dict[str, Any]]:
-    items = result.get("items") or []
+def write_outputs(results: list[dict[str, Any]]) -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    if not items:
-        return []
+    with OUTPUT_JSON.open("w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
 
-    anchors: list[
-        tuple[int, dict[str, Any], float]
-    ] = []
-
-    for index, item in enumerate(items):
-        text = str(item.get("text") or "")
-
-        if is_negative_date_label(text):
-            continue
-
-        similarity = label_similarity(text)
-
-        if (
-            similarity >= 0.58
-            and has_strong_issue_signal(text)
-        ):
-            anchors.append(
-                (index, item, similarity)
-            )
-
-    if not anchors:
-        return []
-
-    date_items: list[
-        tuple[
-            int,
-            dict[str, Any],
-            dict[str, str],
-        ]
-    ] = []
-
-    for index, item in enumerate(items):
-        dates = extract_dates_from_text(
-            str(item.get("text") or ""),
-            birth_iso=None,
-            expiry_iso=None,
-        )
-
-        for parsed in dates:
-            date_items.append(
-                (index, item, parsed)
-            )
-
-    scored: list[dict[str, Any]] = []
-
-    for anchor_index, anchor, similarity in anchors:
-        anchor_center_x = spatial_center_x(anchor)
-        anchor_height = spatial_height(anchor) or 20.0
-        anchor_width = spatial_width(anchor) or 100.0
-
-        for date_index, date_item, parsed in date_items:
-            gap = spatial_vertical_gap(
-                anchor,
-                date_item,
-            )
-
-            if gap is None:
-                continue
-
-            if gap < -0.5 * anchor_height:
-                continue
-
-            if gap > 4.5 * anchor_height:
-                continue
-
-            overlap = spatial_horizontal_overlap(
-                anchor,
-                date_item,
-            )
-
-            date_center_x = spatial_center_x(
-                date_item
-            )
-
-            x_distance = None
-
-            if (
-                anchor_center_x is not None
-                and date_center_x is not None
-            ):
-                x_distance = abs(
-                    date_center_x
-                    - anchor_center_x
-                )
-
-            same_column = (
-                overlap >= 0.15
-                or (
-                    x_distance is not None
-                    and x_distance
-                    <= max(
-                        anchor_width * 0.90,
-                        180.0,
-                    )
-                )
-            )
-
-            if not same_column:
-                continue
-
-            score = similarity * 50.0
-
-            normalized_gap = max(
-                0.0,
-                gap / max(anchor_height, 1.0),
-            )
-
-            score += max(
-                0.0,
-                30.0
-                - normalized_gap * 7.0,
-            )
-
-            score += overlap * 15.0
-
-            if x_distance is not None:
-                score += max(
-                    0.0,
-                    12.0
-                    - (
-                        x_distance
-                        / max(anchor_width, 1.0)
-                    )
-                    * 8.0,
-                )
-
-            confidence = date_item.get(
-                "confidence"
-            )
-
-            try:
-                confidence_float = float(
-                    confidence
-                )
-            except (TypeError, ValueError):
-                confidence_float = 0.0
-
-            score += confidence_float * 5.0
-
-            item_distance = abs(
-                date_index
-                - anchor_index
-            )
-
-            score += max(
-                0.0,
-                6.0
-                - item_distance * 1.5,
-            )
-
-            scored.append(
-                {
-                    "iso": parsed["iso"],
-                    "raw": parsed["raw"],
-                    "score": score,
-                    "variant": variant_name,
-                    "method": "spatial_issue_anchor",
-                    "label_text": anchor.get("text"),
-                    "candidate_text": date_item.get("text"),
-                    "vertical_gap": round(
-                        float(gap),
-                        3,
-                    ),
-                    "horizontal_overlap_ratio": round(
-                        float(overlap),
-                        3,
-                    ),
-                }
-            )
-
-    return scored
-
-
-def best_spatial_doi_candidate(
-    record: dict[str, Any],
-) -> dict[str, Any] | None:
-    variants = record.get("variants") or {}
-    candidates: list[dict[str, Any]] = []
-
-    for variant_name in SPATIAL_VARIANT_ORDER:
-        result = variants.get(variant_name)
-
-        if not result:
-            continue
-
-        candidates.extend(
-            build_spatial_doi_candidates(
-                variant_name,
-                result,
-            )
-        )
-
-    if not candidates:
-        return None
-
-    support: dict[str, set[str]] = {}
-
-    for candidate in candidates:
-        support.setdefault(
-            candidate["iso"],
-            set(),
-        ).add(
-            candidate["variant"]
-        )
-
-    for candidate in candidates:
-        variants_for_date = support[
-            candidate["iso"]
-        ]
-
-        agreement_count = len(
-            variants_for_date
-        )
-
-        candidate[
-            "variant_agreement_count"
-        ] = agreement_count
-
-        candidate[
-            "supporting_variants"
-        ] = sorted(
-            variants_for_date
-        )
-
-        candidate["score"] += (
-            8.0
-            * max(
-                0,
-                agreement_count - 1,
-            )
-        )
-
-    best_by_iso: dict[
-        str,
-        dict[str, Any],
-    ] = {}
-
-    for candidate in candidates:
-        iso = candidate["iso"]
-
-        if (
-            iso not in best_by_iso
-            or candidate["score"]
-            > best_by_iso[iso]["score"]
-        ):
-            best_by_iso[iso] = candidate
-
-    ranked = sorted(
-        best_by_iso.values(),
-        key=lambda item: item["score"],
-        reverse=True,
-    )
-
-    best = ranked[0]
-
-    second_score = (
-        ranked[1]["score"]
-        if len(ranked) > 1
-        else None
-    )
-
-    margin = (
-        best["score"] - second_score
-        if second_score is not None
-        else None
-    )
-
-    best["score"] = round(
-        float(best["score"]),
-        3,
-    )
-
-    best["score_margin"] = (
-        round(float(margin), 3)
-        if margin is not None
-        else None
-    )
-
-    strong_enough = (
-        best["score"] >= 78.0
-        and (
-            margin is None
-            or margin >= 4.0
-            or int(
-                best.get(
-                    "variant_agreement_count",
-                    1,
-                )
-            )
-            >= 2
-        )
-    )
-
-    if not strong_enough:
-        return None
-
-    return best
-
-
-def extract_one(
-    record: dict[str, Any],
-    mrz_map: dict[str, dict[str, str]],
-) -> dict[str, Any]:
-    baseline = extract_one_v3(
-        record,
-        mrz_map,
-    )
-
-    if baseline.get("date_of_issue"):
-        return baseline
-
-    spatial = best_spatial_doi_candidate(
-        record
-    )
-
-    if spatial is None:
-        return baseline
-
-    score = float(
-        spatial["score"]
-    )
-
-    return {
-        "filename": baseline.get(
-            "filename"
-        ),
-        "status": (
-            "high_confidence"
-            if score >= 88.0
-            else "medium_confidence"
-        ),
-        "date_of_issue": spatial["iso"],
-        "raw_date": spatial["raw"],
-        "method": "spatial_issue_anchor",
-        "score": score,
-        "score_margin": spatial.get(
-            "score_margin"
-        ),
-        "birth_date_mrz": baseline.get(
-            "birth_date_mrz"
-        ),
-        "expiry_date_mrz": baseline.get(
-            "expiry_date_mrz"
-        ),
-        "label_text": spatial.get(
-            "label_text"
-        ),
-        "candidate_text": spatial.get(
-            "candidate_text"
-        ),
-        "all_candidate_dates": baseline.get(
-            "all_candidate_dates",
-            [],
-        ),
-        "spatial_variant": spatial.get(
-            "variant"
-        ),
-        "spatial_variant_agreement_count": spatial.get(
-            "variant_agreement_count"
-        ),
-        "spatial_supporting_variants": spatial.get(
-            "supporting_variants"
-        ),
-        "spatial_vertical_gap": spatial.get(
-            "vertical_gap"
-        ),
-        "spatial_horizontal_overlap_ratio": spatial.get(
-            "horizontal_overlap_ratio"
-        ),
-    }
-
-
-# ============================================================
-# IO
-# ============================================================
-
-def load_viz_records(
-) -> list[dict[str, Any]]:
-    if not VIZ_JSON.exists():
-        raise FileNotFoundError(
-            VIZ_JSON
-        )
-
-    with VIZ_JSON.open(
-        "r",
-        encoding="utf-8",
-    ) as file:
-        data = json.load(file)
-
-    if not isinstance(
-        data,
-        list,
-    ):
-        raise ValueError(
-            "viz_ocr_full.json không phải list."
-        )
-
-    return data
-
-
-def write_outputs(
-    results: list[dict[str, Any]],
-) -> None:
-    OUTPUT_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    with OUTPUT_JSON.open(
-        "w",
-        encoding="utf-8",
-    ) as file:
-        json.dump(
-            results,
-            file,
-            ensure_ascii=False,
-            indent=2,
-        )
-
-    rows = []
-
-    for result in results:
-        row = dict(result)
-
-        candidate_dates = row.get(
-            "all_candidate_dates"
-        )
-
-        if isinstance(
-            candidate_dates,
-            list,
-        ):
-            row[
-                "all_candidate_dates"
-            ] = " | ".join(
-                candidate_dates
-            )
-
-        rows.append(
-            row
-        )
-
-    fieldnames = sorted(
-        {
-            key
-            for row in rows
-            for key in row.keys()
-        }
-    )
+    fieldnames: list[str] = []
+    for row in results:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
 
     with OUTPUT_CSV.open(
         "w",
         newline="",
         encoding="utf-8-sig",
-    ) as file:
-        writer = csv.DictWriter(
-            file,
-            fieldnames=fieldnames,
-        )
-
+    ) as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(
-            rows
-        )
+        for row in results:
+            writer.writerow({
+                key: _csv_value(row.get(key))
+                for key in fieldnames
+            })
 
-
-# ============================================================
-# MAIN
-# ============================================================
 
 def main() -> None:
-    viz_records = (
-        load_viz_records()
-    )
-
-    mrz_map = (
-        load_mrz_rows()
-    )
+    records = load_viz_records()
+    mrz_parsed = _read_csv_map(MRZ_PARSED_CSV)
+    mrz_validated = _read_csv_map(MRZ_VALIDATED_CSV)
+    viz_fields = _read_csv_map(VIZ_FIELDS_CSV)
 
     results = [
         extract_one(
             record,
-            mrz_map,
+            mrz_parsed,
+            mrz_validated,
+            viz_fields,
         )
-        for record in viz_records
+        for record in records
     ]
 
-    write_outputs(
-        results
-    )
+    write_outputs(results)
 
-    status_counts = {}
-    method_counts = {}
-
-    extracted = 0
-
-    for result in results:
-        status = result[
-            "status"
-        ]
-
-        status_counts[
-            status
-        ] = (
-            status_counts.get(
-                status,
-                0,
-            )
-            + 1
-        )
-
-        method = result.get(
-            "method"
-        )
-
-        if method:
-            method_counts[
-                method
-            ] = (
-                method_counts.get(
-                    method,
-                    0,
-                )
-                + 1
-            )
-
-        if result.get(
-            "date_of_issue"
-        ):
-            extracted += 1
+    total = len(results)
+    found = sum(bool(r.get("date_of_issue")) for r in results)
+    high = sum(r.get("status") == "high_confidence" for r in results)
+    medium = sum(r.get("status") == "medium_confidence" for r in results)
+    low = sum(r.get("status") == "low_confidence" for r in results)
 
     print("=" * 76)
-    print("KẾT QUẢ DOI HYBRID V3 + SPATIAL RESCUE")
+    print("DATE OF ISSUE EXTRACTION — V6.1")
     print("=" * 76)
-
-    print(
-        f"Tổng VIZ OCR          : "
-        f"{len(results)}"
-    )
-
-    print(
-        f"Extract được DOI      : "
-        f"{extracted}"
-    )
-
-    print("\nStatus:")
-
-    for status, count in sorted(
-        status_counts.items()
-    ):
-        print(
-            f"{status:<28}: "
-            f"{count}"
-        )
-
-    print("\nMethod:")
-
-    for method, count in sorted(
-        method_counts.items()
-    ):
-        print(
-            f"{method:<28}: "
-            f"{count}"
-        )
-
-    print("\nCác case không high-confidence:")
-
-    for result in results:
-        if (
-            result["status"]
-            == "high_confidence"
-        ):
-            continue
-
-        print()
-        print(
-            result[
-                "filename"
-            ]
-        )
-
-        print(
-            "Status :",
-            result[
-                "status"
-            ],
-        )
-
-        print(
-            "DOI    :",
-            result.get(
-                "date_of_issue"
-            ),
-        )
-
-        print(
-            "Method :",
-            result.get(
-                "method"
-            ),
-        )
-
-        print(
-            "DOB    :",
-            result.get(
-                "birth_date_mrz"
-            ),
-        )
-
-        print(
-            "Expiry :",
-            result.get(
-                "expiry_date_mrz"
-            ),
-        )
-
-        print(
-            "Label  :",
-            result.get(
-                "label_text"
-            ),
-        )
-
-        print(
-            "Text   :",
-            result.get(
-                "candidate_text"
-            ),
-        )
-
-    print("\nCSV:")
-    print(OUTPUT_CSV)
+    print(f"Samples          : {total}")
+    print(f"DOI found        : {found}/{total} ({found/total:.1%})" if total else "DOI found: 0")
+    print(f"High confidence  : {high}")
+    print(f"Medium confidence: {medium}")
+    print(f"Low confidence   : {low}")
+    print()
+    print(f"CSV : {OUTPUT_CSV}")
+    print(f"JSON: {OUTPUT_JSON}")
 
 
 if __name__ == "__main__":
