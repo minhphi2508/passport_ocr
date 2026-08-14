@@ -1,78 +1,64 @@
 # Passport OCR Pipeline
 
-End-to-end pipeline for extracting structured information from foreign passport images, with a primary focus on ICAO TD3 passports.
+End-to-end passport OCR pipeline focused on ICAO TD3 passports.
 
-The system combines a YOLO11 passport detector, safe passport-page perspective processing, PaddleOCR-based MRZ/VIZ recognition, TD3 parsing and checksum validation, and hybrid Date of Issue extraction.
+The pipeline combines:
 
-The repository is currently maintained for **two execution environments only**:
+- YOLO11 passport-page / MRZ detection
+- safe perspective processing and landscape normalization
+- PaddleOCR MRZ recognition
+- ICAO TD3 parsing and checksum validation
+- VIZ OCR and Date of Issue extraction
+- final CSV / JSON output
 
-1. Windows laptop, CPU only.
-2. Windows machine with **NVIDIA GeForce RTX 5060 Ti**.
+## Supported environments
 
-Other configurations may work, but they are not part of the maintained/tested setup.
+This repository is maintained for:
 
-## 1. Extracted Fields
+1. Windows CPU-only laptop
+2. Windows + NVIDIA GeForce RTX 5060 Ti
 
-The final output contains:
+Python 3.12 is the maintained Python version.
 
-- Passport number
-- Surname
-- Given names
-- Nationality
-- Date of birth
-- Sex
-- Date of expiry
-- Date of issue
+---
 
-Most identity fields are extracted from the Machine Readable Zone (MRZ).
+## Important RTX 5060 Ti note
 
-`date_of_issue` is extracted from the Visual Inspection Zone (VIZ), because this field is not contained in the standard ICAO TD3 MRZ.
+On Windows, the maintained RTX 5060 Ti configuration **does not put
+PyTorch GPU and PaddlePaddle GPU in the same virtual environment**.
 
-## 2. Pipeline Architecture
+The tested framework profiles use different CUDA runtime package sets:
 
 ```text
-Input passport image
-        |
-        v
-YOLO11 Ver3 detector
-(passport_page + mrz)
-        |
-        v
-Passport page crop
-        |
-        v
-Safe perspective transformation
-+ landscape normalization
-        |
-        +-----------------------------+
-        |                             |
-        v                             v
-     MRZ branch                    VIZ branch
-        |                             |
-        v                             v
-MRZ detection/crop               VIZ crop
-        |                             |
-        v                             v
-MRZ preprocessing               VIZ preprocessing
-        |                             |
-        v                             v
-PaddleOCR                      PaddleOCR
-        |                             |
-        v                             |
-TD3 parsing + validation             |
-        |                             |
-        +-------------+---------------+
-                      |
-                      v
-             Date of Issue extraction
-             (VIZ + MRZ-assisted logic)
-                      |
-                      v
-             Final structured output
-                  (CSV + JSON)
+YOLO / PyTorch
+  PyTorch       2.8.0
+  Torchvision   0.23.0
+  CUDA wheel    cu128
+
+PaddleOCR
+  PaddlePaddle  3.3.0 GPU
+  PaddleOCR     3.7.0
+  PaddleX       3.7.2
+  CUDA wheel    cu129
 ```
 
-## 3. Project Structure
+Loading both GPU frameworks in one Windows Python process can produce DLL
+collisions such as `WinError 127`, including failures while loading
+`cublas64_12.dll` or cuDNN DLLs.
+
+The RTX setup therefore creates two isolated environments:
+
+```text
+.venv-torch
+.venv-paddle
+```
+
+The GPU launcher automatically routes each pipeline stage to the correct
+Python interpreter.
+
+---
+
+## Project structure
 
 ```text
 passport_ocr/
@@ -82,23 +68,23 @@ passport_ocr/
 |-- outputs/
 |-- scripts/
 |   |-- setup_cpu.ps1
-|   `-- setup_rtx5060ti.ps1
+|   |-- setup_rtx5060ti.ps1
+|   `-- run_rtx5060ti.ps1
 |-- src/
 |   |-- device_config.py
 |   |-- pipeline.py
+|   |-- pipeline_rtx5060ti.py
 |   |-- process_passport_pages.py
 |   |-- crop_mrz_batch.py
 |   |-- ocr_mrz_batch.py
 |   |-- parse_mrz_results.py
 |   |-- validate_mrz_results.py
-|   |-- td3_parser.py
-|   |-- td3_validator.py
 |   |-- crop_viz_batch.py
 |   |-- preprocess_viz_batch.py
 |   |-- ocr_viz_batch.py
+|   |-- extract_viz_fields.py
 |   |-- extract_date_of_issue.py
-|   |-- build_final_results.py
-|   `-- evaluate_final_results.py
+|   `-- build_final_results.py
 |-- requirements.txt
 |-- requirements-cpu.txt
 |-- requirements-rtx5060ti.txt
@@ -106,193 +92,120 @@ passport_ocr/
 `-- README.md
 ```
 
-`requirements-gpu.txt` is kept only as a compatibility/deprecation file. New RTX 5060 Ti installations should use `scripts/setup_rtx5060ti.ps1`.
+---
 
-## 4. Supported Environments
-
-### CPU laptop
-
-```text
-OS             : Windows
-Python         : 3.12
-PyTorch        : 2.8.0 CPU
-Torchvision    : 0.23.0 CPU
-PaddlePaddle   : 3.3.0 CPU
-PaddleOCR      : 3.7.0
-PaddleX        : 3.7.2
-Ultralytics    : 8.4.114
-```
-
-### RTX 5060 Ti
-
-```text
-OS             : Windows
-Python         : 3.12
-GPU            : NVIDIA GeForce RTX 5060 Ti
-GPU arch       : Blackwell / compute capability 12.0
-PyTorch        : 2.8.0
-Torchvision    : 0.23.0
-PyTorch CUDA   : 12.8
-PaddlePaddle   : 3.3.0 GPU
-Paddle CUDA    : 12.9 wheel
-PaddleOCR      : 3.7.0
-PaddleX        : 3.7.2
-Ultralytics    : 8.4.114
-```
-
-The old PaddlePaddle GPU 3.2.0 CUDA 12.6 setup must not be used on the RTX 5060 Ti. That wheel does not contain support for compute capability 12.0 and can fail with:
-
-```text
-Mismatched GPU Architecture
-Unsupported GPU architecture
-```
-
-## 5. Clone
+## Clone
 
 ```powershell
 git clone https://github.com/minhphi2508/passport_ocr.git
 cd passport_ocr
 ```
 
-## 6. CPU Setup
+---
 
-Recommended one-command setup:
+# CPU setup
+
+CPU keeps the existing single-environment workflow.
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\setup_cpu.ps1
 ```
 
-The script creates `.venv` with Python 3.12 if necessary and installs `requirements-cpu.txt`.
-
-Manual equivalent:
+Activate when needed:
 
 ```powershell
-py -3.12 -m venv .venv
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
-
-python -m pip install -U pip setuptools wheel
-python -m pip install -r requirements-cpu.txt
 ```
+
+Run:
+
+```powershell
+python src\pipeline.py --fresh
+```
+
+---
+
+# RTX 5060 Ti setup
+
+## Prerequisites
+
+Install:
+
+- current NVIDIA driver
+- Git
+- Python 3.12 x64
 
 Verify:
 
 ```powershell
-python -c "import torch; print('Torch:',torch.__version__); print('CUDA:',torch.cuda.is_available())"
-python -c "import paddle; print('Paddle:',paddle.__version__); print('CUDA:',paddle.device.is_compiled_with_cuda())"
-python src/device_config.py
+nvidia-smi
+py -3.12 --version
+git --version
 ```
 
-CPU is the expected result for both frameworks.
+A separate CUDA Toolkit installation is not required for normal inference;
+the maintained PyTorch and PaddlePaddle wheels provide their CUDA runtime
+dependencies.
 
-## 7. RTX 5060 Ti Setup
+## One-command environment setup
 
-Use the setup script instead of manually installing a generic `requirements-gpu.txt`:
+From the repository root:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\setup_rtx5060ti.ps1
 ```
 
-The script performs the installation in this order:
-
-1. Create/activate Python 3.12 virtual environment.
-2. Install common project dependencies.
-3. Install PyTorch 2.8.0 + Torchvision 0.23.0 from the CUDA 12.8 index.
-4. Install PaddlePaddle GPU 3.3.0 from the CUDA 12.9 package index.
-5. Run dependency checks.
-6. Run real GPU tensor operations with both frameworks.
-
-Manual equivalent:
-
-```powershell
-py -3.12 -m venv .venv
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
-
-python -m pip install -U pip setuptools wheel
-
-python -m pip install -r requirements.txt
-
-python -m pip install `
-    torch==2.8.0 `
-    torchvision==0.23.0 `
-    --index-url https://download.pytorch.org/whl/cu128
-
-python -m pip install `
-    paddlepaddle-gpu==3.3.0 `
-    -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
-```
-
-### PyTorch GPU verification
-
-```powershell
-python -c "import torch; x=torch.randn(1024,1024,device='cuda'); y=x@x; print('Torch:',torch.__version__); print('CUDA:',torch.version.cuda); print('GPU:',torch.cuda.get_device_name(0)); print('Capability:',torch.cuda.get_device_capability(0)); print('Result:',float(y.mean()))"
-```
-
-### Paddle GPU verification
-
-```powershell
-python -c "import paddle; paddle.set_device('gpu:0'); x=paddle.randn([1024,1024]); y=paddle.matmul(x,x); print('Paddle:',paddle.__version__); print('Device:',paddle.device.get_device()); print('Result:',float(paddle.mean(y)))"
-```
-
-A warning such as `No ccache found` is not relevant to normal inference and can be ignored.
-
-When troubleshooting, test `torch` and `paddle` independently. `paddleocr`, `paddlex`, or `modelscope` may transitively import PyTorch, which can make a PyTorch DLL problem appear to be a PaddleOCR problem.
-
-## 8. Dependency Files
-
-### `requirements.txt`
-
-Shared application dependencies only.
-
-It intentionally does not pin/install PyTorch or PaddlePaddle backends.
-
-### `requirements-cpu.txt`
-
-CPU environment. Includes the shared dependencies and CPU framework packages.
-
-### `requirements-rtx5060ti.txt`
-
-Documents the RTX 5060 Ti profile and includes shared dependencies, but the CUDA frameworks are intentionally installed by `scripts/setup_rtx5060ti.ps1` so that each framework uses its correct package index.
-
-### `requirements-gpu.txt`
-
-Deprecated compatibility file. Use `scripts/setup_rtx5060ti.ps1` for new GPU installations.
-
-## 9. Device Selection
-
-`src/device_config.py` detects the two frameworks independently.
-
-YOLO/Ultralytics:
+The setup creates:
 
 ```text
-CUDA available -> device 0
-otherwise      -> cpu
+.venv-torch
+  -> Ultralytics / PyTorch GPU
+  -> torch 2.8.0 cu128
+  -> torchvision 0.23.0 cu128
+
+.venv-paddle
+  -> PaddleOCR / PaddleX
+  -> paddlepaddle-gpu 3.3.0 cu129
 ```
 
-PaddleOCR:
+It then runs real GPU tensor smoke tests for both frameworks.
 
-```text
-CUDA build + GPU available -> gpu:0
-otherwise                  -> cpu
-```
+Do **not** activate either environment to run the full GPU pipeline.
+
+---
+
+## RTX device health check
 
 Run:
 
 ```powershell
-python src/device_config.py
+py -3.12 src\device_config.py
 ```
 
-The summary performs real detection instead of printing a hard-coded GPU value.
-
-## 10. Detection Model
-
-Place the trained YOLO11 Ver3 weights at:
+Expected shape:
 
 ```text
-models/passport_detector_ver3_best.pt
+========================================================================
+DEVICE CONFIGURATION - DUAL GPU ENV
+========================================================================
+YOLO / PyTorch : GPU 0 (NVIDIA GeForce RTX 5060 Ti, sm_120, ...)
+PaddleOCR      : gpu:0 (paddle=3.3.0, gpu_count=1)
+...
+========================================================================
+```
+
+The health check probes Torch and Paddle in separate subprocesses.
+
+---
+
+# Detection model
+
+Place the trained YOLO weights at:
+
+```text
+models\passport_detector_ver3_best.pt
 ```
 
 Detector classes:
@@ -302,12 +215,14 @@ mrz
 passport_page
 ```
 
-## 11. Input
+---
+
+# Input images
 
 Place passport images in:
 
 ```text
-input_images/
+input_images\
 ```
 
 Supported extensions include:
@@ -322,59 +237,72 @@ Supported extensions include:
 .tiff
 ```
 
-## 12. Running the Pipeline
+---
 
-View all stages:
+# Running the RTX 5060 Ti pipeline
+
+Use the RTX launcher, not `python src\pipeline.py`.
+
+List stages:
 
 ```powershell
-python src/pipeline.py --list-stages
+.\scripts\run_rtx5060ti.ps1 --list-stages
 ```
 
-Stages:
+Clean end-to-end run:
+
+```powershell
+.\scripts\run_rtx5060ti.ps1 --fresh
+```
+
+Resume:
+
+```powershell
+.\scripts\run_rtx5060ti.ps1 --start-stage 3
+```
+
+Selected range:
+
+```powershell
+.\scripts\run_rtx5060ti.ps1 --start-stage 8 --end-stage 11
+```
+
+## GPU stage routing
 
 ```text
-1. Detect + Process Passport Pages
-2. Crop MRZ
-3. OCR MRZ
-4. Parse TD3
-5. Validate MRZ
-6. Crop VIZ
-7. Preprocess VIZ
-8. OCR VIZ
-9. Extract Date of Issue
-10. Build Final Results
+Detect + Process Passport Pages
+  -> .venv-torch
+  -> PyTorch / RTX 5060 Ti
+
+OCR MRZ
+  -> .venv-paddle
+  -> PaddleOCR / RTX 5060 Ti
+
+OCR VIZ
+  -> .venv-paddle
+  -> PaddleOCR / RTX 5060 Ti
+
+Other crop / parse / validation / result-building stages
+  -> .venv-torch
+  -> CPU where appropriate
 ```
 
-Run a clean end-to-end batch:
+The launcher reuses the normal `src/pipeline.py` stage definitions,
+checkpointing and output logic. It only changes the Python interpreter used
+for each stage.
 
-```powershell
-python src/pipeline.py --fresh
-```
+---
 
-`--fresh` removes generated outputs/checkpoints from the previous run and is only appropriate when starting from stage 1.
+# Outputs
 
-Resume from stage 3:
-
-```powershell
-python src/pipeline.py --start-stage 3
-```
-
-Run a selected stage range:
-
-```powershell
-python src/pipeline.py --start-stage 8 --end-stage 10
-```
-
-## 13. Outputs
-
-Final files:
+Final output files:
 
 ```text
-outputs/final_results/passport_extraction_results.csv
-outputs/final_results/passport_extraction_results.json
+outputs\final_results\passport_extraction_results.csv
+outputs\final_results\passport_extraction_results.json
 ```
 
-Primary fields:
+Primary fields include:
 
 ```text
 passport_number
@@ -387,38 +315,67 @@ date_of_expiry
 date_of_issue
 ```
 
-Records may be classified as:
+---
+
+# Troubleshooting
+
+## `No ccache found`
+
+A Paddle warning similar to:
 
 ```text
-complete
-partial
-failed
+No ccache found
 ```
 
-A partial record can still contain useful successfully extracted fields.
+is not a normal inference failure and may be ignored.
 
-## 14. Evaluation
+## Paddle works alone but fails after importing Torch
 
-Run:
+If this succeeds:
 
 ```powershell
-python src/evaluate_final_results.py
+.\.venv-paddle\Scripts\python.exe -c "import paddle; paddle.utils.run_check()"
 ```
 
-Outputs:
+but mixing `import torch` and `import paddle` produces `WinError 127`, do not
+merge the two GPU environments. The dual-environment design exists
+specifically to avoid that Windows DLL collision.
+
+## Do not use the old one-venv GPU setup
+
+Do not create one `.venv` containing both:
 
 ```text
-outputs/evaluation/end_to_end_summary.csv
-outputs/evaluation/end_to_end_details.csv
+torch GPU
+paddlepaddle-gpu
 ```
 
-Evaluation numbers from development/smoke-test batches should be treated as pipeline/field-availability references unless they are compared against manually verified ground truth.
+for the maintained RTX 5060 Ti profile.
 
-## 15. Operational Notes
+Do not use PaddlePaddle 3.2.0 CUDA 12.6 on the maintained RTX 5060 Ti setup.
 
-- Keep `.venv/` out of Git.
-- Do not install random newer Torch/Paddle versions into a working environment without a reason.
-- Do not use PaddlePaddle 3.2.0 CUDA 12.6 on the RTX 5060 Ti.
-- A successful real tensor operation is a stronger GPU health check than only checking device count.
-- If the current environment runs the production stages successfully, avoid changing packages merely to remove harmless warnings.
-- The first PaddleOCR run may download official OCR models.
+---
+
+# Development notes
+
+Ignore local environments:
+
+```text
+.venv/
+.venv-torch/
+.venv-paddle/
+```
+
+Before committing environment changes, verify:
+
+```powershell
+py -3.12 -m py_compile src\device_config.py src\pipeline_rtx5060ti.py
+.\scripts\run_rtx5060ti.ps1 --list-stages
+py -3.12 src\device_config.py
+```
+
+For a full GPU smoke test, place at least one image in `input_images` and run:
+
+```powershell
+.\scripts\run_rtx5060ti.ps1 --fresh
+```

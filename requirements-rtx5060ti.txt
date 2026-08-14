@@ -1,9 +1,31 @@
-# RTX 5060 Ti profile.
+# RTX 5060 Ti profile (Windows / Python 3.12).
 #
-# Do NOT install this file directly and expect CUDA wheels to be selected
-# correctly from PyPI. Use:
+# IMPORTANT:
+# Do not install Torch GPU and PaddlePaddle GPU into one virtual environment.
+# On the maintained RTX 5060 Ti Windows setup, their CUDA/cuDNN DLL sets can
+# collide with WinError 127 when both frameworks are loaded in one process.
 #
-#   powershell -ExecutionPolicy Bypass -File .\scripts\setup_rtx5060ti.ps1
+# Use the repository setup script instead:
 #
-# Shared dependencies:
--r requirements.txt
+#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#   .\scripts\setup_rtx5060ti.ps1
+#
+# The script creates:
+#
+#   .venv-torch
+#       numpy==2.3.5
+#       opencv-python==5.0.0.93
+#       ultralytics==8.4.114
+#       torch==2.8.0+cu128
+#       torchvision==0.23.0+cu128
+#
+#   .venv-paddle
+#       numpy==2.3.5
+#       opencv-python==5.0.0.93
+#       paddleocr==3.7.0
+#       paddlex==3.7.2
+#       paddlepaddle-gpu==3.3.0 (CUDA 12.9 package index)
+#
+# Run the GPU pipeline with:
+#
+#   .\scripts\run_rtx5060ti.ps1 --fresh

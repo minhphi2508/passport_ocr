@@ -1,11 +1,19 @@
 # Deprecated compatibility file.
 #
-# This repository is now maintained for only two environments:
-#   1. CPU laptop
-#   2. NVIDIA GeForce RTX 5060 Ti
+# The maintained NVIDIA GPU configuration is RTX 5060 Ti on Windows.
+# It uses TWO isolated GPU virtual environments because PyTorch CUDA and
+# PaddlePaddle CUDA DLLs can conflict when loaded in the same Python process.
 #
-# For RTX 5060 Ti, use:
-#   powershell -ExecutionPolicy Bypass -File .\scripts\setup_rtx5060ti.ps1
+# Do not run:
+#   pip install -r requirements-gpu.txt
 #
-# Kept only so old documentation/commands fail less surprisingly.
--r requirements.txt
+# Instead run:
+#
+#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#   .\scripts\setup_rtx5060ti.ps1
+#
+# Then:
+#
+#   .\scripts\run_rtx5060ti.ps1 --fresh
+#
+# See README.md and requirements-rtx5060ti.txt.

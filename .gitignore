@@ -1,5 +1,7 @@
-# Virtual environment
+# Virtual environments
 .venv/
+.venv-torch/
+.venv-paddle/
 
 # Python cache
 __pycache__/
@@ -24,3 +26,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.log
+
+# Local migration backups
+_backup_rtx5060ti_dual_env/
